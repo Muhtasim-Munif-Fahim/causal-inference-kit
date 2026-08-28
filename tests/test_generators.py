@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from causal_inference.generators import simulate_observational_data
+from causal_inference.generators import simulate_did_data, simulate_observational_data
 
 
 def test_returns_expected_shapes():
@@ -146,3 +146,34 @@ def test_outcome_is_continuous_and_finite():
         _, _, _, outcome, _ = simulate_observational_data(seed=seed)
         assert np.isfinite(outcome).all()
         assert len(np.unique(outcome)) > 10
+
+
+def test_did_shapes():
+    group, period, outcome, true_did = simulate_did_data(n=300, seed=1)
+    assert group.shape == (600,)
+    assert period.shape == (600,)
+    assert outcome.shape == (600,)
+    assert true_did == pytest.approx(1.5)
+    assert set(np.unique(period)) == {0.0, 1.0}
+
+
+def test_did_seed_reproducibility():
+    a = simulate_did_data(n=200, seed=5)
+    b = simulate_did_data(n=200, seed=5)
+    for left, right in zip(a, b):
+        np.testing.assert_array_equal(left, right)
+
+
+def test_did_has_both_groups_in_both_periods():
+    group, period, _, _ = simulate_did_data(n=500, seed=9)
+    for g in (0.0, 1.0):
+        for p in (0.0, 1.0):
+            assert ((group == g) & (period == p)).sum() > 100
+
+
+def test_did_time_trend_shifts_both_groups():
+    group, period, outcome, _ = simulate_did_data(n=2000, ate=0.0, time_trend=2.0, seed=11)
+    for g in (0.0, 1.0):
+        pre = outcome[(group == g) & (period == 0)].mean()
+        post = outcome[(group == g) & (period == 1)].mean()
+        assert post - pre > 1.5

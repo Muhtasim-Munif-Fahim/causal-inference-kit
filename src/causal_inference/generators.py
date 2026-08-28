@@ -109,3 +109,53 @@ def simulate_observational_data(
     outcome = np.where(treatment == 1, y1, y0)
     true_ate = float(np.mean(unit_effect))
     return X, W, treatment, outcome, true_ate
+
+
+def simulate_did_data(
+    n: int = 1000,
+    ate: float = 1.5,
+    time_trend: float = 1.0,
+    group_effect: float = 0.5,
+    seed: int = 0,
+):
+    """Simulate a two-period, two-group panel for difference-in-differences.
+
+    Each unit is observed before (period 0) and after (period 1) a treatment
+    that applies to the treated group in the post period. Trends are parallel
+    by construction: both groups share the same time effect, so the
+    difference-in-differences estimator recovers ``ate`` exactly in
+    expectation.
+
+    Parameters
+    ----------
+    n : int
+        Number of units, each observed in both periods.
+    ate : float
+        True effect of the treatment on the treated group.
+    time_trend : float
+        Common post-period shift shared by both groups.
+    group_effect : float
+        Fixed outcome difference between groups.
+    seed : int
+
+    Returns
+    -------
+    group : ndarray of shape (2n,)
+        Group indicator, 1 = treated.
+    period : ndarray of shape (2n,)
+        Period indicator, 1 = post.
+    outcome : ndarray of shape (2n,)
+    true_did : float
+    """
+    rng = np.random.default_rng(seed)
+    group = rng.binomial(1, 0.5, size=n)
+    unit = rng.normal(size=n)
+    outcome = np.empty(2 * n)
+    for i in range(n):
+        g = group[i]
+        u = unit[i]
+        outcome[2 * i] = group_effect * g + u + rng.normal()
+        outcome[2 * i + 1] = group_effect * g + time_trend + ate * g + u + rng.normal()
+    group_all = np.repeat(group, 2)
+    period_all = np.tile([0.0, 1.0], n)
+    return group_all, period_all, outcome, float(ate)
