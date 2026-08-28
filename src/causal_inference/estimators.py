@@ -44,6 +44,46 @@ def difference_in_means(treatment, outcome) -> float:
     return float(outcome[treatment == 1].mean() - outcome[treatment == 0].mean())
 
 
+def ipw_weights(X, treatment, propensity=None, stabilized: bool = True) -> np.ndarray:
+    """Inverse probability weights, one per unit.
+
+    Raw weights are ``1 / p`` for treated and ``1 / (1 - p)`` for control
+    units. Stabilized weights rescale each group by its marginal share,
+    ``P(T) / p`` and ``(1 - P(T)) / (1 - p)``, which keeps the weights close
+    to one.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+    stabilized : bool
+
+    Returns
+    -------
+    ndarray of shape (n,)
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+    treatment = _validate_treatment(treatment)
+    if X.shape[0] != treatment.shape[0]:
+        raise ValueError("X and treatment must have the same number of rows")
+    if X.shape[0] == 0:
+        raise ValueError("at least one row of data is required")
+    if propensity is None:
+        p, _ = propensity_scores(X, treatment)
+    else:
+        p = _validate_propensity(propensity, treatment.shape[0])
+    treated = treatment == 1
+    if not (treated.any() and (~treated).any()):
+        raise ValueError("both treatment groups must be present")
+    if stabilized:
+        p_treat = treatment.mean()
+        return np.where(treated, p_treat / p, (1.0 - p_treat) / (1.0 - p))
+    return np.where(treated, 1.0 / p, 1.0 / (1.0 - p))
+
+
 def ipw_ate(
     X,
     treatment,
@@ -81,19 +121,9 @@ def ipw_ate(
     X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
     if stabilized and not normalized:
         raise ValueError("stabilized weights require normalized=True")
-    if propensity is None:
-        p, _ = propensity_scores(X, treatment)
-    else:
-        p = _validate_propensity(propensity, treatment.shape[0])
+    weights = ipw_weights(X, treatment, propensity=propensity, stabilized=stabilized)
     treated = treatment == 1
     control = ~treated
-    if not (treated.any() and control.any()):
-        raise ValueError("both treatment groups must be present")
-    p_treat = treatment.mean()
-    if stabilized:
-        weights = np.where(treated, p_treat / p, (1.0 - p_treat) / (1.0 - p))
-    else:
-        weights = np.where(treated, 1.0 / p, 1.0 / (1.0 - p))
     if normalized:
         w_t = weights[treated]
         w_c = weights[control]
@@ -142,66 +172,110 @@ def ipw_att(X, treatment, outcome, propensity=None) -> float:
     )
 
 
+def _nearest_k(sorted_vals, target, k, available=None, caliper=None):
+    """Indices (in the sorted array) of the k values nearest to ``target``.
+
+    Distances are scanned outward from the insertion point of ``target``, so
+    the returned positions are ordered by distance. ``available`` is an
+    optional boolean mask over the sorted positions; masked-out positions are
+    skipped. ``caliper`` stops the scan once the distance exceeds the limit.
+    """
+    pos = np.searchsorted(sorted_vals, target)
+    left = pos - 1
+    right = pos
+    found = []
+    while len(found) < k and (left >= 0 or right < sorted_vals.size):
+        d_left = abs(sorted_vals[left] - target) if left >= 0 else np.inf
+        d_right = abs(sorted_vals[right] - target) if right < sorted_vals.size else np.inf
+        if d_left <= d_right:
+            position = left
+            left -= 1
+        else:
+            position = right
+            right += 1
+        if available is not None and not available[position]:
+            continue
+        if caliper is not None and abs(sorted_vals[position] - target) > caliper:
+            break
+        found.append(position)
+    return found
+
+
 def _match_att(logit, y, treated, control, caliper, with_replacement, n_neighbors):
-    logit_c = logit[control]
-    y_c = y[control]
     order = treated[np.argsort(logit[treated])[::-1]]
+    sorted_pos = np.argsort(logit[control])
+    sorted_logit = logit[control][sorted_pos]
+    sorted_y = y[control][sorted_pos]
+    if with_replacement and n_neighbors == 1:
+        return _match_att_vectorized(logit[order], y[order], sorted_logit, sorted_y, caliper)
     contributions = []
     if with_replacement:
         for ti in order:
-            dists = np.abs(logit[ti] - logit_c)
-            cand = np.argsort(dists)[:n_neighbors]
-            if caliper is not None:
-                cand = cand[dists[cand] <= caliper]
-                if cand.size == 0:
-                    continue
-            contributions.append(y[ti] - y_c[cand].mean())
+            nearest = _nearest_k(sorted_logit, logit[ti], n_neighbors, caliper=caliper)
+            if not nearest:
+                continue
+            contributions.append(y[ti] - np.mean(sorted_y[nearest]))
     else:
         available = np.ones(control.size, dtype=bool)
         for ti in order:
-            dists = np.abs(logit[ti] - logit_c)
-            cand = np.argsort(dists)
-            cand = cand[available[cand]]
-            if caliper is not None:
-                cand = cand[dists[cand] <= caliper]
-            cand = cand[:n_neighbors]
-            if cand.size == 0:
+            nearest = _nearest_k(
+                sorted_logit, logit[ti], n_neighbors, available=available, caliper=caliper
+            )
+            if not nearest:
                 continue
-            available[cand] = False
-            contributions.append(y[ti] - y_c[cand].mean())
+            available[nearest] = False
+            contributions.append(y[ti] - np.mean(sorted_y[nearest]))
     if not contributions:
         raise ValueError("no treated units could be matched (check the caliper)")
     return float(np.mean(contributions))
 
 
+def _match_att_vectorized(target_logit, target_y, sorted_logit, sorted_y, caliper):
+    """Nearest control per treated unit via searchsorted, no replacement."""
+    size = sorted_logit.size
+    pos = np.searchsorted(sorted_logit, target_logit)
+    left = pos - 1
+    right = pos
+    left_ok = left >= 0
+    right_ok = right < size
+    d_left = np.where(left_ok, np.abs(sorted_logit[np.clip(left, 0, size - 1)] - target_logit), np.inf)
+    d_right = np.where(right_ok, np.abs(sorted_logit[np.clip(right, 0, size - 1)] - target_logit), np.inf)
+    best = np.where(d_left <= d_right, left, right)
+    best_d = np.minimum(d_left, d_right)
+    keep = np.ones(target_logit.size, dtype=bool)
+    if caliper is not None:
+        keep = best_d <= caliper
+    if not keep.any():
+        raise ValueError("no treated units could be matched (check the caliper)")
+    best = np.clip(best, 0, size - 1)
+    differences = target_y - sorted_y[best]
+    return float(np.mean(differences[keep]))
+
+
 def _match_ate(logit, y, treated, control, caliper, n_neighbors):
-    logit_c = logit[control]
-    y_c = y[control]
-    logit_t = logit[treated]
-    y_t = y[treated]
     is_treated = np.zeros(logit.shape[0], dtype=bool)
     is_treated[treated] = True
+    c_pos = np.argsort(logit[control])
+    t_pos = np.argsort(logit[treated])
+    sorted_logit_c = logit[control][c_pos]
+    sorted_y_c = y[control][c_pos]
+    sorted_logit_t = logit[treated][t_pos]
+    sorted_y_t = y[treated][t_pos]
     n = logit.shape[0]
     y1_hat = np.empty(n)
     y0_hat = np.empty(n)
     for i in range(n):
         if is_treated[i]:
-            dists = np.abs(logit[i] - logit_c)
-            cand = np.argsort(dists)[:n_neighbors]
-            if caliper is not None:
-                cand = cand[dists[cand] <= caliper]
-                if cand.size == 0:
-                    raise ValueError("no matches found within the caliper")
-            y0_hat[i] = y_c[cand].mean()
+            nearest = _nearest_k(sorted_logit_c, logit[i], n_neighbors, caliper=caliper)
+            if not nearest:
+                raise ValueError("no matches found within the caliper")
+            y0_hat[i] = np.mean(sorted_y_c[nearest])
             y1_hat[i] = y[i]
         else:
-            dists = np.abs(logit[i] - logit_t)
-            cand = np.argsort(dists)[:n_neighbors]
-            if caliper is not None:
-                cand = cand[dists[cand] <= caliper]
-                if cand.size == 0:
-                    raise ValueError("no matches found within the caliper")
-            y1_hat[i] = y_t[cand].mean()
+            nearest = _nearest_k(sorted_logit_t, logit[i], n_neighbors, caliper=caliper)
+            if not nearest:
+                raise ValueError("no matches found within the caliper")
+            y1_hat[i] = np.mean(sorted_y_t[nearest])
             y0_hat[i] = y[i]
     return float(np.mean(y1_hat - y0_hat))
 

@@ -8,6 +8,7 @@ from causal_inference.estimators import (
     difference_in_means,
     ipw_ate,
     ipw_att,
+    ipw_weights,
     propensity_matching,
 )
 from causal_inference.generators import simulate_did_data, simulate_observational_data
@@ -105,6 +106,39 @@ def test_ipw_att_requires_both_groups():
     X = np.zeros((10, 1))
     with pytest.raises(ValueError):
         ipw_att(X, np.ones(10), np.zeros(10))
+
+
+def test_ipw_weights_shape_and_positivity():
+    X, _, treatment, _, _ = _confounded(n=2000)
+    weights = ipw_weights(X, treatment)
+    assert weights.shape == (2000,)
+    assert np.all(weights > 0)
+
+
+def test_ipw_weights_matches_manual_formula():
+    X, _, treatment, _, _ = _confounded(n=2000)
+    p, _ = propensity_scores(X, treatment)
+    p_treat = treatment.mean()
+    manual = np.where(
+        treatment == 1,
+        p_treat / p,
+        (1.0 - p_treat) / (1.0 - p),
+    )
+    np.testing.assert_allclose(ipw_weights(X, treatment), manual, atol=1e-12)
+    raw = np.where(treatment == 1, 1.0 / p, 1.0 / (1.0 - p))
+    np.testing.assert_allclose(
+        ipw_weights(X, treatment, stabilized=False), raw, atol=1e-12
+    )
+
+
+def test_ipw_weights_reject_bad_inputs():
+    X, _, treatment, _, _ = _confounded(n=500)
+    with pytest.raises(ValueError):
+        ipw_weights(X, treatment[:250])
+    with pytest.raises(ValueError):
+        ipw_weights(X, treatment, propensity=np.full(500, 0.0))
+    with pytest.raises(ValueError):
+        ipw_weights(X, np.ones(500))
 
 
 def test_difference_in_means_basic():
