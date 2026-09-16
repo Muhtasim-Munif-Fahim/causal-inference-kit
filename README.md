@@ -3,7 +3,7 @@
 A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
-IPW / matching / difference-in-differences estimators, bootstrap evaluation
+IPW / matching / AIPW / difference-in-differences estimators, bootstrap evaluation
 against the ground truth, and markdown report rendering. Only `numpy` and
 `pandas` are required.
 
@@ -13,7 +13,7 @@ against the ground truth, and markdown report rendering. Only `numpy` and
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), nearest-neighbor propensity matching, difference-in-differences |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -26,6 +26,7 @@ against the ground truth, and markdown report rendering. Only `numpy` and
 | IPW (stabilized, Hájek) | ATE | Inverse probability weighting with stabilized weights |
 | IPW (raw, Horvitz-Thompson) | ATE | Unnormalized inverse-probability difference |
 | IPW | ATT | Controls reweighted by the odds |
+| AIPW (augmented IPW) | ATE | Doubly robust: OLS outcome regression plus IPW residual correction |
 | Propensity matching | ATT | Greedy nearest-neighbor in logit space, with/without replacement, optional caliper |
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
 | Difference-in-differences | ATT (DiD) | Two-period, two-group |
@@ -60,6 +61,7 @@ from causal_inference import (
     simulate_observational_data,
     propensity_scores,
     ipw_ate,
+    aipw_ate,
     evaluate,
     standard_estimators,
 )
@@ -68,8 +70,10 @@ X, W, treatment, outcome, true_ate = simulate_observational_data(
     n=5000, confounding=1.5, seed=7
 )
 p, fit = propensity_scores(X, treatment)
-estimate = ipw_ate(X, treatment, outcome, propensity=p)
-print(f"IPW estimate {estimate:.3f} vs true ATE {true_ate:.3f}")
+ipw = ipw_ate(X, treatment, outcome, propensity=p)
+aipw = aipw_ate(X, treatment, outcome, propensity=p, W=W)
+print(f"IPW  estimate {ipw:.3f} vs true ATE {true_ate:.3f}")
+print(f"AIPW estimate {aipw:.3f} vs true ATE {true_ate:.3f}")
 
 results = evaluate(standard_estimators(), X, W, treatment, outcome, true_ate, n_boot=200)
 for r in results:
@@ -102,6 +106,10 @@ assumptions that are not testable from the data alone:
 - **Correct propensity model:** IPW and matching inherit the error of the
   estimated propensity score; a misspecified model leaves residual
   confounding.
+- **Double robustness (AIPW):** AIPW remains consistent if *either* the
+  propensity model *or* the outcome regressions are correctly specified.
+  Both can be wrong at once, and then AIPW is biased like any other
+  observational estimator.
 - **Difference-in-differences:** requires parallel trends between groups and
   no anticipation of the treatment in the pre period.
 

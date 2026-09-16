@@ -130,6 +130,10 @@ def assumption_caveats() -> str:
         "- **Correct propensity model:** IPW and matching inherit the error "
         "of the estimated propensity score; a misspecified model leaves "
         "residual confounding.\n"
+        "- **Double robustness (AIPW):** the augmented IPW estimator remains "
+        "consistent if *either* the propensity model *or* the outcome "
+        "regressions are correctly specified. Both can be wrong at once, "
+        "and then AIPW is biased like any other observational estimator.\n"
         "- **Difference-in-differences:** requires parallel trends between "
         "groups and no anticipation of the treatment in the pre period.\n"
     )

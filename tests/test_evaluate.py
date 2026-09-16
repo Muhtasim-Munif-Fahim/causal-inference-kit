@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from causal_inference.estimators import difference_in_means, ipw_ate, propensity_matching
+from causal_inference.estimators import aipw_ate, difference_in_means, ipw_ate, propensity_matching
 from causal_inference.evaluate import EvaluationResult, evaluate, standard_estimators
 from causal_inference.generators import simulate_observational_data
 
@@ -16,6 +16,7 @@ def _estimators():
     return {
         "naive": lambda X, W, t, y, p: difference_in_means(t, y),
         "ipw": lambda X, W, t, y, p: ipw_ate(X, t, y, propensity=p),
+        "aipw": lambda X, W, t, y, p: aipw_ate(X, t, y, propensity=p, W=W),
         "matching": lambda X, W, t, y, p: propensity_matching(
             X, t, y, propensity=p, with_replacement=True
         ),
@@ -25,8 +26,15 @@ def _estimators():
 def test_evaluate_returns_one_result_per_estimator():
     X, W, t, y, true_ate = _data()
     results = evaluate(_estimators(), X, W, t, y, true_ate, n_boot=50)
-    assert [r.name for r in results] == ["naive", "ipw", "matching"]
+    assert [r.name for r in results] == ["naive", "ipw", "aipw", "matching"]
     assert all(isinstance(r, EvaluationResult) for r in results)
+
+
+def test_evaluate_bias_small_for_aipw_when_ignorable():
+    X, W, t, y, true_ate = _data()
+    results = evaluate(_estimators(), X, W, t, y, true_ate, n_boot=100)
+    aipw = next(r for r in results if r.name == "aipw")
+    assert abs(aipw.bias) < 0.3
 
 
 def test_evaluate_bias_small_for_ipw_when_ignorable():
@@ -85,14 +93,14 @@ def test_evaluate_list_of_pairs():
 
 
 def test_standard_estimators_names():
-    assert list(standard_estimators()) == ["naive", "ipw", "ipw_att", "matching"]
+    assert list(standard_estimators()) == ["naive", "ipw", "aipw", "ipw_att", "matching"]
 
 
 def test_standard_estimators_recover_truth():
     X, W, t, y, true_ate = _data()
     results = evaluate(standard_estimators(), X, W, t, y, true_ate, n_boot=80)
     for result in results:
-        if result.name in ("ipw", "ipw_att"):
+        if result.name in ("ipw", "aipw", "ipw_att"):
             assert abs(result.bias) < 0.3
     matching = next(r for r in results if r.name == "matching")
     assert abs(matching.estimate - true_ate) < 0.6

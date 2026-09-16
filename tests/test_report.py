@@ -92,7 +92,7 @@ def test_evaluation_table_renders():
 
 def test_assumption_caveats_mentions_key_assumptions():
     text = assumption_caveats()
-    for keyword in ("Ignorability", "Overlap", "SUTVA", "parallel trends"):
+    for keyword in ("Ignorability", "Overlap", "SUTVA", "parallel trends", "double robustness"):
         assert keyword.lower() in text.lower()
 
 

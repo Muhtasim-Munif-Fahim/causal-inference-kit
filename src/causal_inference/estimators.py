@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, propensity matching, difference-in-differences."""
+"""Treatment-effect estimators: IPW, AIPW, propensity matching, difference-in-differences."""
 
 from __future__ import annotations
 
@@ -18,12 +18,17 @@ def _validate_propensity(propensity, n):
     return p
 
 
-def _coerce_arrays(X, treatment, outcome):
+def _as_2d(X):
     X = np.asarray(X, dtype=float)
     if X.ndim == 1:
         X = X.reshape(-1, 1)
     if X.ndim != 2:
-        raise ValueError("X must be a 2d array")
+        raise ValueError("expected a 1d or 2d array")
+    return X
+
+
+def _coerce_arrays(X, treatment, outcome):
+    X = _as_2d(X)
     treatment = _validate_treatment(treatment)
     outcome = np.asarray(outcome, dtype=float).ravel()
     if X.shape[0] != treatment.shape[0] or treatment.shape[0] != outcome.shape[0]:
@@ -31,6 +36,29 @@ def _coerce_arrays(X, treatment, outcome):
     if X.shape[0] == 0:
         raise ValueError("at least one row of data is required")
     return X, treatment, outcome
+
+
+def _outcome_features(X, W=None):
+    """Covariates for the outcome regression: ``X``, plus ``W`` when given."""
+    if W is None:
+        return X
+    W = _as_2d(W)
+    if W.shape[0] != X.shape[0]:
+        raise ValueError("W must have the same number of rows as X")
+    if W.shape[1] == 0:
+        return X
+    return np.column_stack([X, W])
+
+
+def _ols_predict(Z_train, y_train, Z_pred):
+    """OLS with intercept: fit on ``Z_train`` and predict on ``Z_pred``."""
+    n_train = Z_train.shape[0]
+    if n_train == 0:
+        raise ValueError("both treatment groups must be present")
+    design = np.column_stack([np.ones(n_train), Z_train])
+    coef, *_ = np.linalg.lstsq(design, y_train, rcond=None)
+    design_pred = np.column_stack([np.ones(Z_pred.shape[0]), Z_pred])
+    return design_pred @ coef
 
 
 def difference_in_means(treatment, outcome) -> float:
@@ -170,6 +198,105 @@ def ipw_att(X, treatment, outcome, propensity=None) -> float:
     return float(
         outcome[treated].mean() - np.sum(w_control * outcome[control]) / np.sum(w_control)
     )
+
+
+def outcome_regression(X, treatment, outcome, W=None):
+    """Separate OLS outcome models for the treated and control groups.
+
+    Fits ``E[Y | T=1, Z]`` and ``E[Y | T=0, Z]`` by least squares with an
+    intercept, then predicts both regressions for every unit. ``Z`` is ``X``
+    concatenated with ``W`` when ``W`` is supplied. Outcome-only covariates
+    ``W`` belong here rather than in the propensity score: they predict
+    ``Y`` but not treatment assignment.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome covariates stacked onto ``X``.
+
+    Returns
+    -------
+    mu1, mu0 : ndarray of shape (n,)
+        Predicted treated and control potential outcomes.
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    Z = _outcome_features(X, W)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    mu1 = _ols_predict(Z[treated], outcome[treated], Z)
+    mu0 = _ols_predict(Z[control], outcome[control], Z)
+    return mu1, mu0
+
+
+def aipw_ate(
+    X,
+    treatment,
+    outcome,
+    propensity=None,
+    W=None,
+    normalized: bool = False,
+) -> float:
+    """Augmented IPW (doubly robust) estimate of the average treatment effect.
+
+    Combines an outcome regression with inverse-probability weighting. The
+    unnormalized form is the sample mean of the uncentered efficient
+    influence function
+
+    ``m1(Z) - m0(Z) + T / e(X) * (Y - m1(Z)) - (1 - T) / (1 - e(X)) * (Y - m0(Z))``,
+
+    where ``m_t`` is an OLS regression of ``Y`` on ``(X, W)`` in treatment
+    arm ``t`` and ``e(X)`` is the propensity score. The estimator is
+    *doubly robust*: it is consistent if either the propensity model or
+    both outcome regressions are correctly specified, not necessarily both.
+
+    When ``normalized`` is true the IPW residual corrections are
+    Hájek-normalized by the sum of the inverse-propensity weights in each
+    arm, which can reduce variance when weights are heavy-tailed.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders used to estimate the propensity score when
+        ``propensity`` is not supplied, and as outcome-regression
+        covariates.
+    treatment : array-like of shape (n,)
+    outcome : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+        Pre-computed propensity scores.
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates for the regressions ``m_t``.
+    normalized : bool
+
+    Returns
+    -------
+    float
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    if propensity is None:
+        p, _ = propensity_scores(X, treatment)
+    else:
+        p = _validate_propensity(propensity, treatment.shape[0])
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    mu1, mu0 = outcome_regression(X, treatment, outcome, W=W)
+    residual_1 = treated * (outcome - mu1) / p
+    residual_0 = (~treated) * (outcome - mu0) / (1.0 - p)
+    if normalized:
+        w1 = treated / p
+        w0 = (~treated) / (1.0 - p)
+        if w1.sum() <= 0 or w0.sum() <= 0:
+            raise ValueError("AIPW weights sum to zero in one of the groups")
+        mu1_hat = mu1.mean() + residual_1.sum() / w1.sum()
+        mu0_hat = mu0.mean() + residual_0.sum() / w0.sum()
+        return float(mu1_hat - mu0_hat)
+    return float(np.mean(mu1 - mu0 + residual_1 - residual_0))
 
 
 def _nearest_k(sorted_vals, target, k, available=None, caliper=None):

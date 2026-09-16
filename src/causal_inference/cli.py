@@ -9,6 +9,7 @@ import pandas as pd
 
 from . import __version__
 from .estimators import (
+    aipw_ate,
     difference_in_means,
     difference_in_differences,
     ipw_ate,
@@ -69,6 +70,7 @@ def _cmd_estimate(args) -> int:
     estimators = {
         "naive": difference_in_means(treatment, outcome),
         "ipw": ipw_ate(X, treatment, outcome, propensity=p),
+        "aipw": aipw_ate(X, treatment, outcome, propensity=p, W=W),
         "ipw_att": ipw_att(X, treatment, outcome, propensity=p),
         "matching": propensity_matching(
             X, treatment, outcome, propensity=p, with_replacement=True
