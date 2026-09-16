@@ -4,11 +4,13 @@ import numpy as np
 import pytest
 
 from causal_inference.estimators import (
+    aipw_ate,
     difference_in_differences,
     difference_in_means,
     ipw_ate,
     ipw_att,
     ipw_weights,
+    outcome_regression,
     propensity_matching,
 )
 from causal_inference.generators import simulate_did_data, simulate_observational_data
@@ -139,6 +141,111 @@ def test_ipw_weights_reject_bad_inputs():
         ipw_weights(X, treatment, propensity=np.full(500, 0.0))
     with pytest.raises(ValueError):
         ipw_weights(X, np.ones(500))
+
+
+def test_aipw_matches_hand_calculation():
+    X = np.array([[0.0], [0.0], [1.0], [1.0], [0.0]])
+    treatment = np.array([1.0, 1.0, 1.0, 0.0, 0.0])
+    outcome = np.array([2.0, 4.0, 6.0, 1.0, 1.0])
+    p = np.full(5, 0.5)
+    assert aipw_ate(X, treatment, outcome, propensity=p) == pytest.approx(3.2)
+
+
+def test_aipw_ate_recovers_ate_without_selection_bias():
+    X, W, treatment, outcome, true_ate = _confounded()
+    estimate = aipw_ate(X, treatment, outcome, W=W)
+    assert abs(estimate - true_ate) < 0.3
+
+
+def test_aipw_ate_improves_on_naive_difference():
+    X, W, treatment, outcome, true_ate = _confounded()
+    aipw = aipw_ate(X, treatment, outcome, W=W)
+    naive = difference_in_means(treatment, outcome)
+    assert abs(aipw - true_ate) < abs(naive - true_ate)
+
+
+def test_aipw_doubly_robust_to_wrong_propensity():
+    """Correct outcome regression, constant (wrong) propensity."""
+    X, W, treatment, outcome, true_ate = _confounded()
+    p_wrong = np.full(treatment.shape[0], 0.5)
+    estimate = aipw_ate(X, treatment, outcome, propensity=p_wrong, W=W)
+    assert abs(estimate - true_ate) < 0.3
+
+
+def test_aipw_doubly_robust_to_wrong_outcome():
+    """Correct propensity, intercept-only (wrong) outcome regression."""
+    X, _, treatment, outcome, true_ate = _confounded()
+    p, _ = propensity_scores(X, treatment)
+    X_intercept_only = np.zeros((X.shape[0], 1))
+    estimate = aipw_ate(X_intercept_only, treatment, outcome, propensity=p)
+    assert abs(estimate - true_ate) < 0.3
+
+
+def test_aipw_normalized_and_unnormalized_close():
+    X, W, treatment, outcome, true_ate = _confounded()
+    plain = aipw_ate(X, treatment, outcome, W=W, normalized=False)
+    hajek = aipw_ate(X, treatment, outcome, W=W, normalized=True)
+    assert abs(plain - hajek) < 0.2
+    assert abs(plain - true_ate) < 0.3
+    assert abs(hajek - true_ate) < 0.3
+
+
+def test_aipw_uses_explicit_propensity():
+    X, W, treatment, outcome, _ = _confounded(n=5000)
+    p, _ = propensity_scores(X, treatment)
+    with_p = aipw_ate(X, treatment, outcome, propensity=p, W=W)
+    without_p = aipw_ate(X, treatment, outcome, W=W)
+    assert with_p == pytest.approx(without_p, abs=1e-8)
+
+
+def test_aipw_without_w_still_recovers_ate():
+    X, _, treatment, outcome, true_ate = _confounded()
+    estimate = aipw_ate(X, treatment, outcome)
+    assert abs(estimate - true_ate) < 0.3
+
+
+def test_aipw_rejects_out_of_range_propensity():
+    X, W, treatment, outcome, _ = _confounded(n=500)
+    with pytest.raises(ValueError):
+        aipw_ate(X, treatment, outcome, propensity=np.full(500, 0.0), W=W)
+    with pytest.raises(ValueError):
+        aipw_ate(X, treatment, outcome, propensity=np.full(499, 0.5), W=W)
+
+
+def test_aipw_rejects_bad_inputs():
+    X, W, treatment, outcome, _ = _confounded(n=100)
+    with pytest.raises(ValueError):
+        aipw_ate(X, treatment[:50], outcome, W=W)
+    with pytest.raises(ValueError):
+        aipw_ate(X, treatment, outcome[:50], W=W)
+    with pytest.raises(ValueError):
+        aipw_ate(X, treatment, outcome, W=W[:50])
+    with pytest.raises(ValueError):
+        aipw_ate(X, np.ones(100), outcome, W=W)
+
+
+def test_aipw_requires_both_groups():
+    X = np.zeros((10, 1))
+    with pytest.raises(ValueError):
+        aipw_ate(X, np.ones(10), np.zeros(10))
+
+
+def test_outcome_regression_shapes_and_in_sample_fit():
+    X, W, treatment, outcome, _ = _confounded(n=2000)
+    mu1, mu0 = outcome_regression(X, treatment, outcome, W=W)
+    assert mu1.shape == (2000,)
+    assert mu0.shape == (2000,)
+    assert np.all(np.isfinite(mu1))
+    assert np.all(np.isfinite(mu0))
+    treated = treatment == 1
+    assert abs((outcome[treated] - mu1[treated]).mean()) < 1e-8
+    assert abs((outcome[~treated] - mu0[~treated]).mean()) < 1e-8
+
+
+def test_outcome_regression_requires_both_groups():
+    X = np.zeros((10, 1))
+    with pytest.raises(ValueError):
+        outcome_regression(X, np.ones(10), np.zeros(10))
 
 
 def test_difference_in_means_basic():

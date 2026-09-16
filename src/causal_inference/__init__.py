@@ -2,11 +2,13 @@
 
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
+    aipw_ate,
     difference_in_differences,
     difference_in_means,
     ipw_ate,
     ipw_att,
     ipw_weights,
+    outcome_regression,
     propensity_matching,
 )
 from .generators import simulate_did_data, simulate_observational_data
@@ -27,6 +29,7 @@ __all__ = [
     "EvaluationResult",
     "LogisticFit",
     "PropensityHistogram",
+    "aipw_ate",
     "difference_in_differences",
     "difference_in_means",
     "evaluate",
@@ -34,6 +37,7 @@ __all__ = [
     "ipw_att",
     "ipw_weights",
     "logistic_regression",
+    "outcome_regression",
     "propensity_histogram",
     "propensity_matching",
     "propensity_scores",

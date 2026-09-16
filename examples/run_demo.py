@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from causal_inference.estimators import (
+    aipw_ate,
     difference_in_differences,
     difference_in_means,
     ipw_ate,
@@ -48,6 +49,7 @@ def main(argv=None) -> int:
     estimates = [
         ("naive difference", difference_in_means(treatment, outcome)),
         ("ipw (stabilized)", ipw_ate(X, treatment, outcome, propensity=p)),
+        ("aipw (doubly robust)", aipw_ate(X, treatment, outcome, propensity=p, W=W)),
         ("ipw (ATT)", ipw_att(X, treatment, outcome, propensity=p)),
         (
             "matching (ATT)",
