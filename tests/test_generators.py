@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from causal_inference.generators import simulate_did_data, simulate_observational_data
+from causal_inference.generators import (
+    simulate_did_data,
+    simulate_observational_data,
+    simulate_synthetic_control_data,
+)
 
 
 def test_returns_expected_shapes():
@@ -177,3 +181,54 @@ def test_did_time_trend_shifts_both_groups():
         pre = outcome[(group == g) & (period == 0)].mean()
         post = outcome[(group == g) & (period == 1)].mean()
         assert post - pre > 1.5
+
+
+def test_sc_shapes_and_ids():
+    unit, time, outcome, treated_unit, treatment_time, true_effect = (
+        simulate_synthetic_control_data(n_donors=5, n_pre=6, n_post=4, ate=3.5, seed=1)
+    )
+    n_obs = 6 * 10
+    assert unit.shape == (n_obs,)
+    assert time.shape == (n_obs,)
+    assert outcome.shape == (n_obs,)
+    assert treated_unit == 0
+    assert treatment_time == 6
+    assert true_effect == pytest.approx(3.5)
+    assert set(np.unique(unit)) == set(range(6))
+    assert set(np.unique(time)) == set(range(10))
+
+
+def test_sc_seed_reproducibility():
+    a = simulate_synthetic_control_data(n_donors=4, seed=5)
+    b = simulate_synthetic_control_data(n_donors=4, seed=5)
+    for left, right in zip(a, b):
+        np.testing.assert_array_equal(left, right)
+
+
+def test_sc_balanced_panel():
+    unit, time, outcome, _, _, _ = simulate_synthetic_control_data(
+        n_donors=4, n_pre=5, n_post=3, seed=9
+    )
+    for u in np.unique(unit):
+        assert set(time[unit == u]) == set(range(8))
+    assert np.isfinite(outcome).all()
+
+
+def test_sc_post_shift_on_treated_unit():
+    unit, time, outcome, treated, t0, ate = simulate_synthetic_control_data(
+        n_donors=6, n_pre=10, n_post=6, ate=7.0, noise=0.0, seed=11
+    )
+    treated_pre = outcome[(unit == treated) & (time < t0)].mean()
+    treated_post = outcome[(unit == treated) & (time >= t0)].mean()
+    donor_pre = outcome[(unit != treated) & (time < t0)].mean()
+    donor_post = outcome[(unit != treated) & (time >= t0)].mean()
+    assert (treated_post - treated_pre) - (donor_post - donor_pre) == pytest.approx(ate, abs=0.5)
+
+
+def test_sc_rejects_bad_dimensions():
+    with pytest.raises(ValueError):
+        simulate_synthetic_control_data(n_donors=0)
+    with pytest.raises(ValueError):
+        simulate_synthetic_control_data(n_pre=0)
+    with pytest.raises(ValueError):
+        simulate_synthetic_control_data(n_post=0)

@@ -1,6 +1,8 @@
-"""Treatment-effect estimators: IPW, AIPW, propensity matching, difference-in-differences."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -502,4 +504,265 @@ def difference_in_differences(group, period, outcome) -> float:
         - cell_mean((group == 1) & (period == 0))
         - cell_mean((group == 0) & (period == 1))
         + cell_mean((group == 0) & (period == 0))
+    )
+
+
+@dataclass
+class SyntheticControlResult:
+    """Abadie-style synthetic control fit for a single treated unit.
+
+    Attributes
+    ----------
+    estimate : float
+        Average post-treatment gap between the treated unit and the
+        synthetic control.
+    weights : ndarray of shape (n_donors,)
+        Non-negative donor weights summing to 1, aligned with ``donor_ids``.
+    donor_ids : ndarray of shape (n_donors,)
+        Unit identifiers of the donor pool, in sorted order.
+    times : ndarray of shape (n_times,)
+        Sorted period identifiers.
+    treated_outcome : ndarray of shape (n_times,)
+        Observed outcome path of the treated unit.
+    synthetic_outcome : ndarray of shape (n_times,)
+        Donor-weighted synthetic path.
+    gap : ndarray of shape (n_times,)
+        ``treated_outcome - synthetic_outcome`` in every period.
+    pre_rmspe : float
+        Root mean squared pre-treatment gap.
+    post_rmspe : float
+        Root mean squared post-treatment gap.
+    placebo_p_value : float or None
+        In-space placebo rank p-value, or ``None`` when placebos were not run.
+    placebo_estimates : ndarray or None
+        Average post-treatment gap for each donor placebo.
+    placebo_ratios : ndarray or None
+        Post/pre RMSPE ratios for each donor placebo.
+    """
+
+    estimate: float
+    weights: np.ndarray
+    donor_ids: np.ndarray
+    times: np.ndarray
+    treated_outcome: np.ndarray
+    synthetic_outcome: np.ndarray
+    gap: np.ndarray
+    pre_rmspe: float
+    post_rmspe: float
+    placebo_p_value: float | None = None
+    placebo_estimates: np.ndarray | None = None
+    placebo_ratios: np.ndarray | None = None
+
+
+def _project_simplex(v: np.ndarray) -> np.ndarray:
+    """Euclidean projection onto ``{w >= 0, sum(w) = 1}`` (Duchi et al.)."""
+    v = np.asarray(v, dtype=float).ravel()
+    n = v.size
+    if n == 0:
+        raise ValueError("at least one donor unit is required")
+    u = np.sort(v)[::-1]
+    cssv = np.cumsum(u) - 1.0
+    rho = np.nonzero(u > cssv / np.arange(1, n + 1))[0][-1]
+    theta = cssv[rho] / (rho + 1.0)
+    w = np.maximum(v - theta, 0.0)
+    total = w.sum()
+    if total <= 0:
+        return np.ones(n) / n
+    return w / total
+
+
+def _fit_simplex_weights(X0: np.ndarray, x1: np.ndarray, max_iter: int = 20000) -> np.ndarray:
+    """Non-negative weights summing to 1 that match ``X0 w`` to ``x1``.
+
+    Solves ``min_{w in simplex} ||X0 w - x1||^2`` by accelerated projected
+    gradient descent (FISTA) on the probability simplex. ``X0`` is the
+    ``(n_pre, n_donors)`` matrix of donor pre-treatment outcomes and ``x1``
+    is the treated unit's pre-treatment path.
+    """
+    X0 = np.asarray(X0, dtype=float)
+    x1 = np.asarray(x1, dtype=float).ravel()
+    if X0.ndim != 2:
+        raise ValueError("donor pre-treatment outcomes must be a 2d array")
+    n_pre, n_donors = X0.shape
+    if n_donors < 1:
+        raise ValueError("at least one donor unit is required")
+    if n_pre < 1:
+        raise ValueError("at least one pre-treatment period is required")
+    if x1.shape[0] != n_pre:
+        raise ValueError("treated and donor pre-treatment lengths differ")
+
+    lipschitz = float(np.linalg.norm(X0, 2)) ** 2
+    if not np.isfinite(lipschitz) or lipschitz <= 1e-18:
+        return np.ones(n_donors) / n_donors
+    step = 1.0 / lipschitz
+    gram = X0.T @ X0
+    xtx1 = X0.T @ x1
+
+    w = np.ones(n_donors) / n_donors
+    z = w.copy()
+    t = 1.0
+    for _ in range(max_iter):
+        grad = gram @ z - xtx1
+        w_new = _project_simplex(z - step * grad)
+        t_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t * t))
+        z = w_new + ((t - 1.0) / t_new) * (w_new - w)
+        if np.max(np.abs(w_new - w)) < 1e-12:
+            w = w_new
+            break
+        w, t = w_new, t_new
+    w = np.maximum(w, 0.0)
+    return w / w.sum()
+
+
+def _rmspe(gap: np.ndarray) -> float:
+    gap = np.asarray(gap, dtype=float).ravel()
+    if gap.size == 0:
+        raise ValueError("cannot compute RMSPE of an empty gap")
+    return float(np.sqrt(np.mean(gap ** 2)))
+
+
+def _rmspe_ratio(pre_gap: np.ndarray, post_gap: np.ndarray) -> float:
+    pre = _rmspe(pre_gap)
+    post = _rmspe(post_gap)
+    if pre < 1e-15:
+        return float(np.inf) if post > 1e-15 else 0.0
+    return post / pre
+
+
+def _panel_from_long(unit, time, outcome):
+    """Pivot a long panel into a balanced ``(n_units, n_times)`` matrix."""
+    unit = np.asarray(unit)
+    time = np.asarray(time)
+    outcome = np.asarray(outcome, dtype=float).ravel()
+    if not (unit.shape[0] == time.shape[0] == outcome.shape[0]):
+        raise ValueError("unit, time and outcome must have the same length")
+    if unit.shape[0] == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+
+    unit_ids, unit_index = np.unique(unit, return_inverse=True)
+    time_ids, time_index = np.unique(time, return_inverse=True)
+    n_units = unit_ids.size
+    n_times = time_ids.size
+    n_unique = np.unique(np.column_stack([unit_index, time_index]), axis=0).shape[0]
+    if n_unique < unit.shape[0]:
+        raise ValueError("duplicate unit-time observations")
+    if n_unique != n_units * n_times:
+        raise ValueError("unbalanced panel: every unit must be observed at every time")
+
+    panel = np.empty((n_units, n_times), dtype=float)
+    panel[unit_index, time_index] = outcome
+    return panel, unit_ids, time_ids
+
+
+def _match_id(ids: np.ndarray, value):
+    matches = np.flatnonzero(ids == value)
+    if matches.size == 0 and np.issubdtype(ids.dtype, np.number):
+        try:
+            matches = np.flatnonzero(ids == type(ids[0])(value))
+        except (TypeError, ValueError):
+            matches = np.array([], dtype=int)
+    if matches.size != 1:
+        raise ValueError(f"treated_unit {value!r} must identify exactly one unit")
+    return int(matches[0])
+
+
+def synthetic_control(
+    unit,
+    time,
+    outcome,
+    treated_unit,
+    treatment_time,
+    placebo: bool = False,
+) -> SyntheticControlResult:
+    """Abadie synthetic control for a single treated unit.
+
+    Donor weights are constrained to the probability simplex (non-negative
+    and summing to one) and chosen to match the treated unit's
+    pre-treatment outcomes. The estimate is the average post-treatment
+    gap between the treated series and the synthetic series
+    ``sum_j w_j Y_jt``.
+
+    When ``placebo`` is true, the same procedure is applied to every
+    donor (leaving the originally treated unit out of the donor pool).
+    The reported p-value is the rank of the treated unit's post/pre
+    RMSPE ratio among these in-space placebos,
+    ``(1 + #{placebos with ratio >= treated}) / (1 + n_donors)``.
+
+    Parameters
+    ----------
+    unit : array-like of shape (n,)
+        Unit identifier for each observation.
+    time : array-like of shape (n,)
+        Period identifier. Compared against ``treatment_time``.
+    outcome : array-like of shape (n,)
+    treated_unit :
+        Identifier of the single treated unit.
+    treatment_time :
+        First post-treatment period. Periods strictly before this value
+        are used to fit the weights.
+    placebo : bool
+        If true, run in-space placebos on every donor.
+
+    Returns
+    -------
+    SyntheticControlResult
+    """
+    panel, unit_ids, time_ids = _panel_from_long(unit, time, outcome)
+    treated_index = _match_id(unit_ids, treated_unit)
+    pre_mask = time_ids < treatment_time
+    post_mask = time_ids >= treatment_time
+    if not pre_mask.any():
+        raise ValueError("at least one pre-treatment period is required")
+    if not post_mask.any():
+        raise ValueError("at least one post-treatment period is required")
+
+    donor_index = np.flatnonzero(np.arange(unit_ids.size) != treated_index)
+    if donor_index.size < 1:
+        raise ValueError("at least one donor unit is required")
+    if placebo and donor_index.size < 2:
+        raise ValueError("placebo checks require at least two donor units")
+
+    treated_y = panel[treated_index]
+    donor_y = panel[donor_index]
+    weights = _fit_simplex_weights(donor_y[:, pre_mask].T, treated_y[pre_mask])
+    synthetic = weights @ donor_y
+    gap = treated_y - synthetic
+    estimate = float(gap[post_mask].mean())
+    pre_rmspe = _rmspe(gap[pre_mask])
+    post_rmspe = _rmspe(gap[post_mask])
+
+    placebo_p_value = None
+    placebo_estimates = None
+    placebo_ratios = None
+    if placebo:
+        treated_ratio = _rmspe_ratio(gap[pre_mask], gap[post_mask])
+        placebo_estimates = np.empty(donor_index.size)
+        placebo_ratios = np.empty(donor_index.size)
+        for k, j in enumerate(donor_index):
+            others = np.delete(donor_index, k)
+            p_weights = _fit_simplex_weights(
+                panel[others][:, pre_mask].T, panel[j, pre_mask]
+            )
+            p_synthetic = p_weights @ panel[others]
+            p_gap = panel[j] - p_synthetic
+            placebo_estimates[k] = p_gap[post_mask].mean()
+            placebo_ratios[k] = _rmspe_ratio(p_gap[pre_mask], p_gap[post_mask])
+        n_extreme = int(np.sum(placebo_ratios >= treated_ratio))
+        placebo_p_value = (1.0 + n_extreme) / (1.0 + donor_index.size)
+
+    return SyntheticControlResult(
+        estimate=estimate,
+        weights=weights,
+        donor_ids=unit_ids[donor_index],
+        times=time_ids,
+        treated_outcome=treated_y,
+        synthetic_outcome=synthetic,
+        gap=gap,
+        pre_rmspe=pre_rmspe,
+        post_rmspe=post_rmspe,
+        placebo_p_value=placebo_p_value,
+        placebo_estimates=placebo_estimates,
+        placebo_ratios=placebo_ratios,
     )

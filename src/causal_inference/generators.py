@@ -159,3 +159,100 @@ def simulate_did_data(
     group_all = np.repeat(group, 2)
     period_all = np.tile([0.0, 1.0], n)
     return group_all, period_all, outcome, float(ate)
+
+
+def simulate_synthetic_control_data(
+    n_donors: int = 8,
+    n_pre: int = 12,
+    n_post: int = 8,
+    ate: float = 5.0,
+    n_factors: int = 2,
+    noise: float = 0.1,
+    seed: int = 0,
+):
+    """Simulate a balanced panel for Abadie-style synthetic control.
+
+    One treated unit and ``n_donors`` untreated donors are observed for
+    ``n_pre`` pre-treatment and ``n_post`` post-treatment periods. Outcomes
+    follow an interactive factor model
+
+    ``Y_it = alpha_i + lambda_i' F_t + eps_it``,
+
+    where the treated unit's intercept and factor loadings are a convex
+    combination of the donors'. A constant ``ate`` is then added to the
+    treated unit in every post-treatment period. With small noise a
+    synthetic control that matches the pre-treatment path therefore
+    recovers ``ate`` as the average post-treatment gap.
+
+    Parameters
+    ----------
+    n_donors : int
+        Number of untreated donor units.
+    n_pre : int
+        Number of pre-treatment periods (times ``0, ..., n_pre - 1``).
+    n_post : int
+        Number of post-treatment periods.
+    ate : float
+        Constant post-treatment effect added to the treated unit.
+    n_factors : int
+        Dimension of the latent factors ``F_t``.
+    noise : float
+        Standard deviation of the idiosyncratic outcome shock.
+    seed : int
+
+    Returns
+    -------
+    unit : ndarray of shape (n_units * n_times,)
+        Unit id. The treated unit is ``0``; donors are ``1, ..., n_donors``.
+    time : ndarray of shape (n_units * n_times,)
+        Period index ``0, ..., n_pre + n_post - 1``.
+    outcome : ndarray of shape (n_units * n_times,)
+    treated_unit : int
+        Always ``0``.
+    treatment_time : int
+        First post-treatment period, equal to ``n_pre``.
+    true_effect : float
+        The constant post-treatment effect ``ate``.
+    """
+    if n_donors < 1:
+        raise ValueError("n_donors must be at least 1")
+    if n_pre < 1:
+        raise ValueError("n_pre must be at least 1")
+    if n_post < 1:
+        raise ValueError("n_post must be at least 1")
+    if n_factors < 1:
+        raise ValueError("n_factors must be at least 1")
+    if noise < 0:
+        raise ValueError("noise must be non-negative")
+
+    rng = np.random.default_rng(seed)
+    n_units = n_donors + 1
+    n_times = n_pre + n_post
+
+    k = min(3, n_donors)
+    raw = np.linspace(0.5, 0.1, k)
+    true_w = np.zeros(n_donors)
+    true_w[:k] = raw / raw.sum()
+
+    factors = np.zeros((n_factors, n_times))
+    factors[:, 0] = rng.normal(size=n_factors)
+    for t in range(1, n_times):
+        factors[:, t] = 0.85 * factors[:, t - 1] + rng.normal(size=n_factors)
+
+    lambda_donors = rng.normal(size=(n_donors, n_factors))
+    alpha_donors = rng.normal(size=n_donors)
+    lambda_treated = true_w @ lambda_donors
+    alpha_treated = float(true_w @ alpha_donors)
+
+    panel = np.empty((n_units, n_times))
+    panel[0] = alpha_treated + lambda_treated @ factors + noise * rng.normal(size=n_times)
+    for j in range(n_donors):
+        panel[j + 1] = (
+            alpha_donors[j] + lambda_donors[j] @ factors + noise * rng.normal(size=n_times)
+        )
+    panel[0, n_pre:] += ate
+
+    unit = np.repeat(np.arange(n_units), n_times)
+    time = np.tile(np.arange(n_times), n_units)
+    outcome = panel.reshape(-1)
+    return unit, time, outcome, 0, int(n_pre), float(ate)
