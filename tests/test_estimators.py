@@ -12,8 +12,13 @@ from causal_inference.estimators import (
     ipw_weights,
     outcome_regression,
     propensity_matching,
+    synthetic_control,
 )
-from causal_inference.generators import simulate_did_data, simulate_observational_data
+from causal_inference.generators import (
+    simulate_did_data,
+    simulate_observational_data,
+    simulate_synthetic_control_data,
+)
 from causal_inference.propensity import propensity_scores
 
 
@@ -408,3 +413,157 @@ def test_did_rejects_invalid_values():
 def test_did_length_mismatch_raises():
     with pytest.raises(ValueError):
         difference_in_differences(np.zeros(3), np.zeros(4), np.zeros(3))
+
+
+def _sc_long(treated, donors, times=None):
+    """Stack a treated path and donor matrix into long unit/time/outcome."""
+    donors = np.asarray(donors, dtype=float)
+    treated = np.asarray(treated, dtype=float).ravel()
+    n_times = treated.size
+    if times is None:
+        times = np.arange(n_times)
+    unit = np.concatenate(
+        [np.repeat(0, n_times), np.repeat(np.arange(1, donors.shape[0] + 1), n_times)]
+    )
+    time = np.tile(times, donors.shape[0] + 1)
+    outcome = np.concatenate([treated, donors.reshape(-1)])
+    return unit, time, outcome
+
+
+def test_synthetic_control_hand_calculation():
+    treated = np.array([2.0, 4.0, 10.0])
+    donors = np.array([[2.0, 4.0, 5.0], [0.0, 0.0, 0.0]])
+    unit, time, outcome = _sc_long(treated, donors)
+    result = synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=2)
+    assert result.estimate == pytest.approx(5.0)
+    np.testing.assert_allclose(result.weights, [1.0, 0.0], atol=1e-8)
+    np.testing.assert_allclose(result.gap, [0.0, 0.0, 5.0], atol=1e-8)
+    assert result.pre_rmspe == pytest.approx(0.0, abs=1e-8)
+    assert result.placebo_p_value is None
+
+
+def test_synthetic_control_convex_combination():
+    treated = np.array([3.0, 3.0, 10.0])
+    donors = np.array([[6.0, 6.0, 8.0], [0.0, 0.0, 4.0]])
+    unit, time, outcome = _sc_long(treated, donors)
+    result = synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=2)
+    np.testing.assert_allclose(result.weights, [0.5, 0.5], atol=1e-6)
+    assert result.estimate == pytest.approx(4.0)
+    np.testing.assert_allclose(result.synthetic_outcome, [3.0, 3.0, 6.0], atol=1e-6)
+
+
+def test_synthetic_control_weights_nonnegative_and_sum_to_one():
+    treated = np.array([4.0, 4.0, 10.0])
+    donors = np.array([[3.0, 3.0, 7.0], [2.0, 2.0, 1.0]])
+    unit, time, outcome = _sc_long(treated, donors)
+    result = synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=2)
+    assert np.all(result.weights >= -1e-12)
+    assert result.weights.sum() == pytest.approx(1.0)
+    assert result.weights[0] > result.weights[1]
+
+
+def test_synthetic_control_recovers_effect_on_factor_panel():
+    unit, time, outcome, treated, t0, true_effect = simulate_synthetic_control_data(
+        n_donors=6, n_pre=15, n_post=8, ate=5.0, noise=0.05, seed=11
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0)
+    assert abs(result.estimate - true_effect) < 0.5
+    assert result.pre_rmspe < 0.5
+    assert np.all(result.weights >= -1e-12)
+    assert result.weights.sum() == pytest.approx(1.0)
+
+
+def test_synthetic_control_zero_effect():
+    unit, time, outcome, treated, t0, _ = simulate_synthetic_control_data(
+        n_donors=6, n_pre=15, n_post=8, ate=0.0, noise=0.05, seed=13
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0)
+    assert abs(result.estimate) < 0.5
+
+
+def test_synthetic_control_negative_effect():
+    unit, time, outcome, treated, t0, true_effect = simulate_synthetic_control_data(
+        n_donors=6, n_pre=15, n_post=8, ate=-3.0, noise=0.05, seed=17
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0)
+    assert abs(result.estimate - true_effect) < 0.5
+
+
+def test_synthetic_control_noise_free_recovers_exact_effect():
+    unit, time, outcome, treated, t0, true_effect = simulate_synthetic_control_data(
+        n_donors=5, n_pre=12, n_post=6, ate=4.0, noise=0.0, seed=19
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0)
+    assert result.estimate == pytest.approx(true_effect, abs=0.05)
+    assert result.pre_rmspe == pytest.approx(0.0, abs=0.05)
+
+
+def test_synthetic_control_placebo_ranks_treated_when_effect_is_large():
+    unit, time, outcome, treated, t0, _ = simulate_synthetic_control_data(
+        n_donors=6, n_pre=12, n_post=8, ate=8.0, noise=0.0, seed=23
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0, placebo=True)
+    assert result.placebo_p_value == pytest.approx(1.0 / 7.0)
+    assert result.placebo_estimates.shape == (6,)
+    assert result.placebo_ratios.shape == (6,)
+    treated_ratio = result.post_rmspe / result.pre_rmspe if result.pre_rmspe > 1e-15 else np.inf
+    assert np.all(result.placebo_ratios <= treated_ratio + 1e-12)
+
+
+def test_synthetic_control_placebo_requires_two_donors():
+    treated = np.array([1.0, 2.0, 4.0])
+    donors = np.array([[1.0, 2.0, 2.0]])
+    unit, time, outcome = _sc_long(treated, donors)
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=2, placebo=True)
+
+
+def test_synthetic_control_rejects_missing_treated_unit():
+    unit, time, outcome, _, t0, _ = simulate_synthetic_control_data(n_donors=3, seed=3)
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated_unit=99, treatment_time=t0)
+
+
+def test_synthetic_control_rejects_no_pre_period():
+    unit, time, outcome, treated, _, _ = simulate_synthetic_control_data(n_donors=3, seed=5)
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated, treatment_time=-1)
+
+
+def test_synthetic_control_rejects_no_post_period():
+    unit, time, outcome, treated, _, _ = simulate_synthetic_control_data(
+        n_donors=3, n_pre=4, n_post=4, seed=7
+    )
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated, treatment_time=100)
+
+
+def test_synthetic_control_rejects_unbalanced_panel():
+    unit = np.array([0, 0, 1])
+    time = np.array([0, 1, 0])
+    outcome = np.array([1.0, 2.0, 3.0])
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=1)
+
+
+def test_synthetic_control_rejects_duplicate_observations():
+    unit = np.array([0, 0, 1, 1, 0])
+    time = np.array([0, 1, 0, 1, 0])
+    outcome = np.arange(5.0)
+    with pytest.raises(ValueError):
+        synthetic_control(unit, time, outcome, treated_unit=0, treatment_time=1)
+
+
+def test_synthetic_control_rejects_length_mismatch():
+    with pytest.raises(ValueError):
+        synthetic_control(np.zeros(3), np.zeros(4), np.zeros(3), 0, 1)
+
+
+def test_synthetic_control_donor_ids_exclude_treated():
+    unit, time, outcome, treated, t0, _ = simulate_synthetic_control_data(
+        n_donors=4, seed=29
+    )
+    result = synthetic_control(unit, time, outcome, treated, t0)
+    assert treated not in set(result.donor_ids.tolist())
+    assert result.donor_ids.tolist() == [1, 2, 3, 4]
+    assert result.weights.shape == (4,)

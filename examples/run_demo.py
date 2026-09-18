@@ -16,9 +16,14 @@ from causal_inference.estimators import (
     ipw_att,
     ipw_weights,
     propensity_matching,
+    synthetic_control,
 )
 from causal_inference.evaluate import evaluate, standard_estimators
-from causal_inference.generators import simulate_did_data, simulate_observational_data
+from causal_inference.generators import (
+    simulate_did_data,
+    simulate_observational_data,
+    simulate_synthetic_control_data,
+)
 from causal_inference.propensity import propensity_scores
 from causal_inference.report import render_report
 
@@ -84,12 +89,28 @@ def main(argv=None) -> int:
     did = difference_in_differences(group, period, did_outcome)
     print(f"\ndifference-in-differences on a simulated panel: {did:.3f} (true {true_did:.3f})")
 
+    sc_unit, sc_time, sc_outcome, sc_treated, sc_t0, true_sc = simulate_synthetic_control_data(
+        n_donors=8, n_pre=12, n_post=8, ate=5.0, seed=args.seed
+    )
+    sc = synthetic_control(
+        sc_unit, sc_time, sc_outcome, sc_treated, sc_t0, placebo=True
+    )
+    print(
+        f"synthetic control on a simulated donor panel: {sc.estimate:.3f} "
+        f"(true {true_sc:.3f}, placebo p {sc.placebo_p_value:.3f})"
+    )
+
     os.makedirs(args.out_dir, exist_ok=True)
     report_path = os.path.join(args.out_dir, "demo_report.md")
-    did_section = (
+    extra_section = (
         "## Difference-in-differences\n\n"
         f"On a simulated two-period two-group panel the DiD estimate is "
-        f"**{did:.3f}** against a true effect of **{true_did:.3f}**."
+        f"**{did:.3f}** against a true effect of **{true_did:.3f}**.\n\n"
+        "## Synthetic control\n\n"
+        f"On a simulated donor panel the synthetic control estimate is "
+        f"**{sc.estimate:.3f}** against a true effect of **{true_sc:.3f}**. "
+        f"Pre-treatment RMSPE is {sc.pre_rmspe:.3f}; the in-space placebo "
+        f"p-value is {sc.placebo_p_value:.3f}."
     )
     markdown = render_report(
         X,
@@ -99,7 +120,7 @@ def main(argv=None) -> int:
         results,
         true_ate,
         weights=ipw_weights(X, treatment),
-        extra_markdown=did_section,
+        extra_markdown=extra_section,
     )
     with open(report_path, "w", encoding="utf-8") as fh:
         fh.write(markdown)

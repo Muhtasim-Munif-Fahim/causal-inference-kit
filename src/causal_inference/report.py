@@ -136,6 +136,10 @@ def assumption_caveats() -> str:
         "and then AIPW is biased like any other observational estimator.\n"
         "- **Difference-in-differences:** requires parallel trends between "
         "groups and no anticipation of the treatment in the pre period.\n"
+        "- **Synthetic control:** the treated unit's pre-treatment path must "
+        "lie in the convex hull of the donor paths, donors must remain "
+        "untreated, and there must be no anticipation. In-space placebo "
+        "ranks are a diagnostic, not a conventional sampling p-value.\n"
     )
 
 

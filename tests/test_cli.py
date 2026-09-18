@@ -105,7 +105,9 @@ def test_demo_writes_report(tmp_path):
     assert code == 0
     report = out_dir / "demo_report.md"
     assert report.exists()
-    assert "## Difference-in-differences" in report.read_text(encoding="utf-8")
+    text = report.read_text(encoding="utf-8")
+    assert "## Difference-in-differences" in text
+    assert "## Synthetic control" in text
 
 
 def test_demo_prints_estimates(capsys, tmp_path):
@@ -116,3 +118,4 @@ def test_demo_prints_estimates(capsys, tmp_path):
     assert "ipw (stabilized)" in captured.out
     assert "aipw (doubly robust)" in captured.out
     assert "bootstrap evaluation" in captured.out
+    assert "synthetic control" in captured.out

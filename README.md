@@ -3,17 +3,17 @@
 A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
-IPW / matching / AIPW / difference-in-differences estimators, bootstrap evaluation
-against the ground truth, and markdown report rendering. Only `numpy` and
-`pandas` are required.
+IPW / matching / AIPW / difference-in-differences / synthetic-control
+estimators, bootstrap evaluation against the ground truth, and markdown
+report rendering. Only `numpy` and `pandas` are required.
 
 ## Contents
 
 | Module | Purpose |
 | --- | --- |
-| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD |
+| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD; a donor panel for synthetic control |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences, Abadie synthetic control |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -30,6 +30,7 @@ against the ground truth, and markdown report rendering. Only `numpy` and
 | Propensity matching | ATT | Greedy nearest-neighbor in logit space, with/without replacement, optional caliper |
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
 | Difference-in-differences | ATT (DiD) | Two-period, two-group |
+| Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
 
 ## Installation
 
@@ -87,7 +88,26 @@ python examples/run_demo.py
 ```
 
 simulates a confounded sample, runs every estimator, evaluates them with a
-bootstrap, runs a DiD panel and writes `examples/output/demo_report.md`.
+bootstrap, runs a DiD panel and a synthetic-control donor panel, and writes
+`examples/output/demo_report.md`.
+
+### Synthetic control (Python)
+
+```python
+from causal_inference import simulate_synthetic_control_data, synthetic_control
+
+unit, time, outcome, treated, t0, true_effect = simulate_synthetic_control_data(
+    n_donors=8, n_pre=12, n_post=8, ate=5.0, seed=7
+)
+result = synthetic_control(unit, time, outcome, treated, t0, placebo=True)
+print(result.estimate, true_effect, result.weights, result.placebo_p_value)
+```
+
+Donor weights are constrained to the simplex (non-negative, sum to one) and
+chosen so the synthetic series matches the treated unit before `t0`. The
+estimate is the average post-treatment gap. With `placebo=True` each donor is
+treated as if it were treated; the rank of the treated unit's post/pre RMSPE
+ratio among those placebos is returned as `placebo_p_value`.
 
 ## Identifiability caveats
 
@@ -112,6 +132,10 @@ assumptions that are not testable from the data alone:
   observational estimator.
 - **Difference-in-differences:** requires parallel trends between groups and
   no anticipation of the treatment in the pre period.
+- **Synthetic control:** the treated unit's pre-treatment path must be
+  well approximated by a convex combination of untreated donors, with no
+  anticipation. In-space placebo ranks are a diagnostic, not a conventional
+  sampling p-value.
 
 ## Tests
 
