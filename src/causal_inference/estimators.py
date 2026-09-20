@@ -871,9 +871,12 @@ def _weighted_local_linear(x, y, cutoff, weights):
     coef, *_ = np.linalg.lstsq(design * sqrt_w[:, None], y * sqrt_w, rcond=None)
     resid = y - design @ coef
     n_pos = int(np.sum(weights > 0))
-    if n_pos <= 2:
+    if n_pos < 2:
         raise ValueError("each side of the cutoff needs at least two observations")
-    sigma2 = float(np.sum(weights * resid ** 2) / (n_pos - 2))
+    if n_pos == 2:
+        sigma2 = 0.0
+    else:
+        sigma2 = float(np.sum(weights * resid ** 2) / (n_pos - 2))
     xtwx = design.T @ (weights[:, None] * design)
     try:
         inv = np.linalg.inv(xtwx)
