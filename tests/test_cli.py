@@ -108,6 +108,7 @@ def test_demo_writes_report(tmp_path):
     text = report.read_text(encoding="utf-8")
     assert "## Difference-in-differences" in text
     assert "## Synthetic control" in text
+    assert "## Regression discontinuity" in text
 
 
 def test_demo_prints_estimates(capsys, tmp_path):
@@ -119,3 +120,4 @@ def test_demo_prints_estimates(capsys, tmp_path):
     assert "aipw (doubly robust)" in captured.out
     assert "bootstrap evaluation" in captured.out
     assert "synthetic control" in captured.out
+    assert "regression discontinuity" in captured.out

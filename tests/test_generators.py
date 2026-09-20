@@ -6,6 +6,7 @@ import pytest
 from causal_inference.generators import (
     simulate_did_data,
     simulate_observational_data,
+    simulate_rd_data,
     simulate_synthetic_control_data,
 )
 
@@ -232,3 +233,58 @@ def test_sc_rejects_bad_dimensions():
         simulate_synthetic_control_data(n_pre=0)
     with pytest.raises(ValueError):
         simulate_synthetic_control_data(n_post=0)
+
+
+def test_rd_shapes_and_assignment():
+    running, treatment, outcome, cutoff, true_effect = simulate_rd_data(
+        n=500, cutoff=0.5, ate=3.0, seed=1
+    )
+    assert running.shape == (500,)
+    assert treatment.shape == (500,)
+    assert outcome.shape == (500,)
+    assert cutoff == pytest.approx(0.5)
+    assert true_effect == pytest.approx(3.0)
+    assert set(np.unique(treatment)) == {0.0, 1.0}
+    np.testing.assert_array_equal(treatment, (running >= cutoff).astype(float))
+    assert np.isfinite(outcome).all()
+
+
+def test_rd_seed_reproducibility():
+    a = simulate_rd_data(n=400, seed=5)
+    b = simulate_rd_data(n=400, seed=5)
+    for left, right in zip(a, b):
+        np.testing.assert_array_equal(left, right)
+
+
+def test_rd_both_sides_nonempty():
+    running, treatment, _, cutoff, _ = simulate_rd_data(n=2000, seed=9)
+    assert (running < cutoff).sum() > 200
+    assert (running >= cutoff).sum() > 200
+    assert 0.3 < treatment.mean() < 0.7
+
+
+def test_rd_noise_free_matches_polynomial():
+    running, treatment, outcome, cutoff, ate = simulate_rd_data(
+        n=300,
+        cutoff=0.0,
+        ate=2.0,
+        noise=0.0,
+        slope=1.5,
+        slope_jump=0.5,
+        curvature=0.25,
+        seed=11,
+    )
+    z = running - cutoff
+    expected = (
+        1.5 * z + 0.5 * treatment * z + 0.25 * z ** 2 + ate * treatment
+    )
+    np.testing.assert_allclose(outcome, expected)
+
+
+def test_rd_rejects_bad_arguments():
+    with pytest.raises(ValueError):
+        simulate_rd_data(n=0)
+    with pytest.raises(ValueError):
+        simulate_rd_data(spread=0.0)
+    with pytest.raises(ValueError):
+        simulate_rd_data(noise=-0.1)

@@ -3,17 +3,18 @@
 A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
-IPW / matching / AIPW / difference-in-differences / synthetic-control
-estimators, bootstrap evaluation against the ground truth, and markdown
-report rendering. Only `numpy` and `pandas` are required.
+IPW / matching / AIPW / difference-in-differences / synthetic-control /
+regression-discontinuity estimators, bootstrap evaluation against the
+ground truth, and markdown report rendering. Only `numpy` and `pandas`
+are required.
 
 ## Contents
 
 | Module | Purpose |
 | --- | --- |
-| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD; a donor panel for synthetic control |
+| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD; a donor panel for synthetic control; a running-variable sample for sharp RD |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences, Abadie synthetic control |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences, Abadie synthetic control, sharp local-linear regression discontinuity |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -31,6 +32,7 @@ report rendering. Only `numpy` and `pandas` are required.
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
 | Difference-in-differences | ATT (DiD) | Two-period, two-group |
 | Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
+| Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
 
 ## Installation
 
@@ -88,8 +90,8 @@ python examples/run_demo.py
 ```
 
 simulates a confounded sample, runs every estimator, evaluates them with a
-bootstrap, runs a DiD panel and a synthetic-control donor panel, and writes
-`examples/output/demo_report.md`.
+bootstrap, runs a DiD panel, a synthetic-control donor panel and a sharp
+RD sample, and writes `examples/output/demo_report.md`.
 
 ### Synthetic control (Python)
 
@@ -108,6 +110,23 @@ chosen so the synthetic series matches the treated unit before `t0`. The
 estimate is the average post-treatment gap. With `placebo=True` each donor is
 treated as if it were treated; the rank of the treated unit's post/pre RMSPE
 ratio among those placebos is returned as `placebo_p_value`.
+
+### Regression discontinuity (Python)
+
+```python
+from causal_inference import simulate_rd_data, regression_discontinuity
+
+running, treatment, outcome, cutoff, true_effect = simulate_rd_data(
+    n=4000, cutoff=0.0, ate=2.0, slope=1.0, seed=7
+)
+result = regression_discontinuity(running, outcome, cutoff=cutoff)
+print(result.estimate, true_effect, result.bandwidth, result.n_left, result.n_right)
+```
+
+Local linear regressions of the outcome on `(running - cutoff)` are fit on
+each side of the threshold, with triangular-kernel weights by default. The
+estimate is the intercept jump at the cutoff. Omit `bandwidth` to use the
+Imbens–Kalyanaraman (2012) selector, or pass a positive window half-width.
 
 ## Identifiability caveats
 
@@ -136,6 +155,11 @@ assumptions that are not testable from the data alone:
   well approximated by a convex combination of untreated donors, with no
   anticipation. In-space placebo ranks are a diagnostic, not a conventional
   sampling p-value.
+- **Regression discontinuity (sharp):** the running variable must not be
+  manipulated at the cutoff, potential-outcome conditional means must be
+  continuous there, and treatment must switch deterministically. The
+  estimate is local to the threshold, not an ATE for the whole sample.
+  Bandwidth choice trades bias against variance.
 
 ## Tests
 

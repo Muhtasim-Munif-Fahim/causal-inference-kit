@@ -99,6 +99,7 @@ def test_assumption_caveats_mentions_key_assumptions():
         "parallel trends",
         "double robustness",
         "synthetic control",
+        "regression discontinuity",
     ):
         assert keyword.lower() in text.lower()
 

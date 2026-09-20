@@ -256,3 +256,85 @@ def simulate_synthetic_control_data(
     time = np.tile(np.arange(n_times), n_units)
     outcome = panel.reshape(-1)
     return unit, time, outcome, 0, int(n_pre), float(ate)
+
+
+def simulate_rd_data(
+    n: int = 2000,
+    cutoff: float = 0.0,
+    ate: float = 2.0,
+    noise: float = 0.5,
+    slope: float = 1.0,
+    slope_jump: float = 0.0,
+    curvature: float = 0.0,
+    spread: float = 1.0,
+    seed: int = 0,
+):
+    """Simulate a sharp regression-discontinuity design.
+
+    The running variable is drawn uniformly on
+    ``[cutoff - spread, cutoff + spread]``. Treatment is assigned
+    deterministically as ``T = 1{R >= cutoff}``. Potential outcomes
+    share a polynomial baseline that is continuous at the cutoff, so
+    the only jump in ``E[Y | R]`` at the threshold is ``ate``:
+
+    ``Y = slope * (R - c) + slope_jump * T * (R - c)
+        + curvature * (R - c)^2 + ate * T + ε``.
+
+    Local linear RD therefore recovers ``ate`` in expectation when
+    ``curvature`` is zero (linear sides) and approximately when
+    ``curvature`` is small relative to the bandwidth. A non-zero
+    ``slope`` makes the global treated-minus-control difference a
+    biased estimator of the cutoff effect, because treated units have
+    systematically larger running-variable values.
+
+    Parameters
+    ----------
+    n : int
+        Number of units.
+    cutoff : float
+        Treatment threshold.
+    ate : float
+        Jump in the outcome at the cutoff.
+    noise : float
+        Standard deviation of the idiosyncratic outcome shock.
+    slope : float
+        Common linear slope in the running variable.
+    slope_jump : float
+        Extra slope on the treated side (the intercept jump is still
+        ``ate``).
+    curvature : float
+        Shared quadratic term, continuous at the cutoff.
+    spread : float
+        Half-width of the uniform support of the running variable.
+    seed : int
+
+    Returns
+    -------
+    running : ndarray of shape (n,)
+        Running (forcing) variable.
+    treatment : ndarray of shape (n,)
+        Sharp treatment indicator ``1{running >= cutoff}``.
+    outcome : ndarray of shape (n,)
+    cutoff : float
+    true_effect : float
+        The cutoff jump ``ate``.
+    """
+    if n < 1:
+        raise ValueError("n must be at least 1")
+    if spread <= 0:
+        raise ValueError("spread must be positive")
+    if noise < 0:
+        raise ValueError("noise must be non-negative")
+
+    rng = np.random.default_rng(seed)
+    running = rng.uniform(cutoff - spread, cutoff + spread, size=n)
+    treatment = (running >= cutoff).astype(float)
+    centered = running - cutoff
+    outcome = (
+        slope * centered
+        + slope_jump * treatment * centered
+        + curvature * centered ** 2
+        + ate * treatment
+        + noise * rng.normal(size=n)
+    )
+    return running, treatment, outcome, float(cutoff), float(ate)
