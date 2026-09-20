@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control, RD."""
 
 from __future__ import annotations
 
@@ -765,4 +765,300 @@ def synthetic_control(
         placebo_p_value=placebo_p_value,
         placebo_estimates=placebo_estimates,
         placebo_ratios=placebo_ratios,
+    )
+
+
+_RD_KERNELS = ("triangular", "uniform", "epanechnikov")
+_IK_KERNEL_CONSTANT = {
+    "triangular": 3.43754,
+    "uniform": 5.40384,
+    "epanechnikov": 3.1999,
+}
+
+
+@dataclass
+class RegressionDiscontinuityResult:
+    """Sharp local-linear regression-discontinuity fit at a cutoff.
+
+    Attributes
+    ----------
+    estimate : float
+        Jump in the conditional mean at the cutoff: the treatment effect
+        for units at the threshold. Equal to ``intercept_right -
+        intercept_left`` when treated units sit above the cutoff, and
+        the opposite when ``treated_above`` is false.
+    cutoff : float
+        Threshold used to assign treatment.
+    bandwidth : float
+        Half-width of the window around the cutoff. Observations with
+        ``|running - cutoff|`` larger than this (or with zero kernel
+        weight) are dropped.
+    kernel : str
+        Kernel used for the local-linear weights.
+    n_left : int
+        Number of control-side observations with positive kernel weight.
+    n_right : int
+        Number of treated-side observations with positive kernel weight.
+    intercept_left : float
+        Local-linear intercept approaching the cutoff from the left.
+    intercept_right : float
+        Local-linear intercept approaching the cutoff from the right.
+    slope_left : float
+        Local-linear slope on the left of the cutoff.
+    slope_right : float
+        Local-linear slope on the right of the cutoff.
+    se : float
+        Conventional homoskedastic standard error of the jump.
+    treated_above : bool
+        If true, units with ``running >= cutoff`` are treated.
+    """
+
+    estimate: float
+    cutoff: float
+    bandwidth: float
+    kernel: str
+    n_left: int
+    n_right: int
+    intercept_left: float
+    intercept_right: float
+    slope_left: float
+    slope_right: float
+    se: float
+    treated_above: bool = True
+
+
+def _coerce_rd_arrays(running, outcome):
+    running = np.asarray(running, dtype=float).ravel()
+    outcome = np.asarray(outcome, dtype=float).ravel()
+    if running.shape[0] != outcome.shape[0]:
+        raise ValueError("running and outcome must have the same length")
+    if running.shape[0] == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(running)):
+        raise ValueError("running variable must be finite")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+    return running, outcome
+
+
+def _normalize_rd_kernel(kernel: str) -> str:
+    if kernel == "rectangular":
+        kernel = "uniform"
+    if kernel not in _RD_KERNELS:
+        raise ValueError(f"kernel must be one of {list(_RD_KERNELS)}")
+    return kernel
+
+
+def _kernel_weights(u: np.ndarray, kernel: str) -> np.ndarray:
+    """Kernel weights on the scaled running variable ``u = (R - c) / h``."""
+    u = np.asarray(u, dtype=float).ravel()
+    abs_u = np.abs(u)
+    if kernel == "triangular":
+        return np.where(abs_u < 1.0, 1.0 - abs_u, 0.0)
+    if kernel == "uniform":
+        return np.where(abs_u <= 1.0, 1.0, 0.0)
+    return np.where(abs_u <= 1.0, 0.75 * (1.0 - u * u), 0.0)
+
+
+def _weighted_local_linear(x, y, cutoff, weights):
+    """Intercept, slope and intercept variance from weighted local linear."""
+    n = x.shape[0]
+    if n < 2:
+        raise ValueError("each side of the cutoff needs at least two observations")
+    z = x - cutoff
+    design = np.column_stack([np.ones(n), z])
+    sqrt_w = np.sqrt(np.maximum(weights, 0.0))
+    coef, *_ = np.linalg.lstsq(design * sqrt_w[:, None], y * sqrt_w, rcond=None)
+    resid = y - design @ coef
+    n_pos = int(np.sum(weights > 0))
+    if n_pos <= 2:
+        raise ValueError("each side of the cutoff needs at least two observations")
+    sigma2 = float(np.sum(weights * resid ** 2) / (n_pos - 2))
+    xtwx = design.T @ (weights[:, None] * design)
+    try:
+        inv = np.linalg.inv(xtwx)
+    except np.linalg.LinAlgError:
+        inv = np.linalg.pinv(xtwx)
+    var_intercept = float(max(sigma2 * inv[0, 0], 0.0))
+    return float(coef[0]), float(coef[1]), var_intercept
+
+
+def _ik_bandwidth(running, outcome, cutoff, kernel: str) -> float:
+    """Imbens–Kalyanaraman (2012) MSE-optimal bandwidth for local linear RD.
+
+    Follows the practical selector in IK (Review of Economic Studies) as
+    implemented by the ``rdd`` R package: a uniform-kernel pilot for the
+    density and residual variance, a cubic for the third derivative, local
+    quadratics for the second derivatives, and a regularization term that
+    keeps the denominator away from zero when the estimated curvatures
+    nearly cancel.
+    """
+    x = np.asarray(running, dtype=float).ravel()
+    y = np.asarray(outcome, dtype=float).ravel()
+    n = x.size
+    sx = float(np.std(x, ddof=1))
+    if not np.isfinite(sx) or sx <= 0:
+        raise ValueError("running variable has no variation")
+
+    h1 = 1.84 * sx * n ** (-0.2)
+    left_pilot = (x >= cutoff - h1) & (x <= cutoff)
+    right_pilot = (x > cutoff) & (x <= cutoff + h1)
+    n_lp = int(left_pilot.sum())
+    n_rp = int(right_pilot.sum())
+    if n_lp < 1 or n_rp < 1:
+        raise ValueError("insufficient data near the cutoff to choose a bandwidth")
+
+    fbar = (n_lp + n_rp) / (2.0 * n * h1)
+    if fbar <= 0:
+        raise ValueError("insufficient data near the cutoff to choose a bandwidth")
+    var_y = (
+        np.sum((y[left_pilot] - y[left_pilot].mean()) ** 2)
+        + np.sum((y[right_pilot] - y[right_pilot].mean()) ** 2)
+    ) / (n_lp + n_rp)
+
+    left_all = x <= cutoff
+    right_all = x > cutoff
+    if int(left_all.sum()) < 2 or int(right_all.sum()) < 2:
+        raise ValueError("both sides of the cutoff must have observations")
+    med_left = float(np.median(x[left_all]))
+    med_right = float(np.median(x[right_all]))
+    cubic_mask = (x >= med_left) & (x <= med_right)
+    if int((x[left_pilot] > med_left).sum()) == 0 or int((x[right_pilot] < med_right).sum()) == 0:
+        raise ValueError("insufficient data near the cutoff to choose a bandwidth")
+    if int(cubic_mask.sum()) < 5:
+        raise ValueError("insufficient data near the cutoff to choose a bandwidth")
+
+    z = x - cutoff
+    dummy = (x >= cutoff).astype(float)
+    cubic_design = np.column_stack([np.ones(n), dummy, z, z ** 2, z ** 3])
+    cubic_coef, *_ = np.linalg.lstsq(cubic_design[cubic_mask], y[cubic_mask], rcond=None)
+    m3 = 6.0 * float(cubic_coef[4])
+    m3_sq = max(m3 ** 2, 0.01)
+
+    n_left_all = float((x < cutoff).sum())
+    n_right_all = float((x >= cutoff).sum())
+    h2_l = 3.56 * (n_left_all ** (-1.0 / 7.0)) * (var_y / (fbar * m3_sq)) ** (1.0 / 7.0)
+    h2_r = 3.56 * (n_right_all ** (-1.0 / 7.0)) * (var_y / (fbar * m3_sq)) ** (1.0 / 7.0)
+
+    left_h2 = (x >= cutoff - h2_l) & (x < cutoff)
+    right_h2 = (x >= cutoff) & (x <= cutoff + h2_r)
+    n_l2 = int(left_h2.sum())
+    n_r2 = int(right_h2.sum())
+    if n_l2 < 3 or n_r2 < 3:
+        raise ValueError("insufficient data near the cutoff to choose a bandwidth")
+
+    def _quadratic_second_deriv(mask):
+        zz = z[mask]
+        design = np.column_stack([np.ones(mask.sum()), zz, zz ** 2])
+        coef, *_ = np.linalg.lstsq(design, y[mask], rcond=None)
+        return 2.0 * float(coef[2])
+
+    m2_l = _quadratic_second_deriv(left_h2)
+    m2_r = _quadratic_second_deriv(right_h2)
+    r_l = 720.0 * var_y / (n_l2 * h2_l ** 4)
+    r_r = 720.0 * var_y / (n_r2 * h2_r ** 4)
+    denom = fbar * ((m2_r - m2_l) ** 2 + r_l + r_r)
+    if denom <= 0 or not np.isfinite(denom):
+        raise ValueError("automatic bandwidth selector failed")
+    ck = _IK_KERNEL_CONSTANT[kernel]
+    bandwidth = ck * (2.0 * var_y / denom) ** 0.2 * n ** (-0.2)
+    if not np.isfinite(bandwidth) or bandwidth <= 0:
+        raise ValueError("automatic bandwidth selector failed")
+    return float(bandwidth)
+
+
+def regression_discontinuity(
+    running,
+    outcome,
+    cutoff: float = 0.0,
+    bandwidth=None,
+    kernel: str = "triangular",
+    treatment=None,
+    treated_above: bool = True,
+) -> RegressionDiscontinuityResult:
+    """Sharp local-linear regression discontinuity at a cutoff.
+
+    Treatment is a deterministic function of a running variable: units
+    with ``running >= cutoff`` are treated when ``treated_above`` is
+    true (the usual score-above-threshold design). Within a bandwidth
+    ``h`` the estimator fits kernel-weighted linear regressions of the
+    outcome on ``(running - cutoff)`` separately on each side. The
+    intercepts are the left and right limits of ``E[Y | running]`` at
+    the cutoff; their difference is the treatment effect for units at
+    the threshold.
+
+    When ``bandwidth`` is omitted the Imbens–Kalyanaraman (2012)
+    MSE-optimal bandwidth is used. The default triangular kernel is the
+    MSE-optimal kernel for local linear RD; uniform and Epanechnikov
+    kernels are also available.
+
+    The estimand is local. Continuity of the potential-outcome
+    conditional means at the cutoff, no manipulation of the running
+    variable, and sharp assignment are required; the estimate is not an
+    ATE for the whole sample.
+
+    Parameters
+    ----------
+    running : array-like of shape (n,)
+        Running (forcing) variable.
+    outcome : array-like of shape (n,)
+    cutoff : float
+        Treatment threshold.
+    bandwidth : float, optional
+        Window half-width. If omitted, the IK selector is used.
+    kernel : {"triangular", "uniform", "epanechnikov"}
+    treatment : array-like of shape (n,), optional
+        If given, must match sharp assignment at ``cutoff``.
+    treated_above : bool
+        If true, ``running >= cutoff`` is the treated side.
+
+    Returns
+    -------
+    RegressionDiscontinuityResult
+    """
+    running, outcome = _coerce_rd_arrays(running, outcome)
+    kernel = _normalize_rd_kernel(kernel)
+    if treatment is not None:
+        treatment = _validate_treatment(treatment)
+        if treatment.shape[0] != running.shape[0]:
+            raise ValueError("treatment must have one entry per running-variable unit")
+        assigned = (running >= cutoff) if treated_above else (running < cutoff)
+        if not np.array_equal(treatment, assigned.astype(float)):
+            raise ValueError(
+                "treatment is not a sharp function of the running variable at the cutoff"
+            )
+    if bandwidth is None:
+        bandwidth = _ik_bandwidth(running, outcome, cutoff, kernel)
+    else:
+        bandwidth = float(bandwidth)
+        if not np.isfinite(bandwidth) or bandwidth <= 0:
+            raise ValueError("bandwidth must be a positive finite number")
+
+    weights = _kernel_weights((running - cutoff) / bandwidth, kernel)
+    left = (running < cutoff) & (weights > 0)
+    right = (running >= cutoff) & (weights > 0)
+    if int(left.sum()) < 2 or int(right.sum()) < 2:
+        raise ValueError("each side of the cutoff needs at least two observations")
+
+    a_left, b_left, var_left = _weighted_local_linear(
+        running[left], outcome[left], cutoff, weights[left]
+    )
+    a_right, b_right, var_right = _weighted_local_linear(
+        running[right], outcome[right], cutoff, weights[right]
+    )
+    jump = a_right - a_left
+    estimate = jump if treated_above else -jump
+    return RegressionDiscontinuityResult(
+        estimate=float(estimate),
+        cutoff=float(cutoff),
+        bandwidth=float(bandwidth),
+        kernel=kernel,
+        n_left=int(left.sum()),
+        n_right=int(right.sum()),
+        intercept_left=a_left,
+        intercept_right=a_right,
+        slope_left=b_left,
+        slope_right=b_right,
+        se=float(np.sqrt(var_left + var_right)),
+        treated_above=bool(treated_above),
     )

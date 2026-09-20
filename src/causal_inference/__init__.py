@@ -2,6 +2,7 @@
 
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
+    RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
     difference_in_differences,
@@ -11,11 +12,13 @@ from .estimators import (
     ipw_weights,
     outcome_regression,
     propensity_matching,
+    regression_discontinuity,
     synthetic_control,
 )
 from .generators import (
     simulate_did_data,
     simulate_observational_data,
+    simulate_rd_data,
     simulate_synthetic_control_data,
 )
 from .propensity import (
@@ -35,6 +38,7 @@ __all__ = [
     "EvaluationResult",
     "LogisticFit",
     "PropensityHistogram",
+    "RegressionDiscontinuityResult",
     "SyntheticControlResult",
     "aipw_ate",
     "difference_in_differences",
@@ -48,9 +52,11 @@ __all__ = [
     "propensity_histogram",
     "propensity_matching",
     "propensity_scores",
+    "regression_discontinuity",
     "render_report",
     "simulate_did_data",
     "simulate_observational_data",
+    "simulate_rd_data",
     "simulate_synthetic_control_data",
     "standard_estimators",
     "standardized_mean_differences",

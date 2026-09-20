@@ -140,6 +140,12 @@ def assumption_caveats() -> str:
         "lie in the convex hull of the donor paths, donors must remain "
         "untreated, and there must be no anticipation. In-space placebo "
         "ranks are a diagnostic, not a conventional sampling p-value.\n"
+        "- **Regression discontinuity (sharp):** the running variable must "
+        "not be manipulated at the cutoff, the conditional means of the "
+        "potential outcomes must be continuous at the cutoff, and treatment "
+        "must switch deterministically there. The estimate is the jump at "
+        "the threshold, not an ATE for the whole sample. Bandwidth choice "
+        "trades bias against variance.\n"
     )
 
 

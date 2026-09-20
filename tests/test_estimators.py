@@ -12,11 +12,13 @@ from causal_inference.estimators import (
     ipw_weights,
     outcome_regression,
     propensity_matching,
+    regression_discontinuity,
     synthetic_control,
 )
 from causal_inference.generators import (
     simulate_did_data,
     simulate_observational_data,
+    simulate_rd_data,
     simulate_synthetic_control_data,
 )
 from causal_inference.propensity import propensity_scores
@@ -567,3 +569,168 @@ def test_synthetic_control_donor_ids_exclude_treated():
     assert treated not in set(result.donor_ids.tolist())
     assert result.donor_ids.tolist() == [1, 2, 3, 4]
     assert result.weights.shape == (4,)
+
+
+def test_rd_hand_calculation():
+    running = np.array([-2.0, -1.0, 1.0, 2.0])
+    outcome = np.array([0.0, 1.0, 5.0, 6.0])
+    result = regression_discontinuity(
+        running, outcome, cutoff=0.0, bandwidth=10.0, kernel="uniform"
+    )
+    assert result.estimate == pytest.approx(2.0)
+    assert result.intercept_left == pytest.approx(2.0)
+    assert result.intercept_right == pytest.approx(4.0)
+    assert result.slope_left == pytest.approx(1.0)
+    assert result.slope_right == pytest.approx(1.0)
+    assert result.n_left == 2
+    assert result.n_right == 2
+
+
+def test_rd_kernel_does_not_change_exact_linear_fit():
+    running = np.array([-2.0, -1.0, 1.0, 2.0])
+    outcome = np.array([0.0, 1.0, 5.0, 6.0])
+    for kernel in ("triangular", "uniform", "epanechnikov"):
+        result = regression_discontinuity(
+            running, outcome, cutoff=0.0, bandwidth=3.0, kernel=kernel
+        )
+        assert result.estimate == pytest.approx(2.0)
+        assert result.kernel == kernel
+
+
+def test_rd_recovers_effect_on_linear_dgp():
+    running, _, outcome, cutoff, true_effect = simulate_rd_data(
+        n=6000, ate=2.0, slope=1.0, noise=0.4, seed=11
+    )
+    result = regression_discontinuity(
+        running, outcome, cutoff=cutoff, bandwidth=0.5, kernel="triangular"
+    )
+    assert abs(result.estimate - true_effect) < 0.2
+    assert result.n_left >= 2
+    assert result.n_right >= 2
+    assert result.se > 0
+
+
+def test_rd_zero_effect():
+    running, _, outcome, cutoff, _ = simulate_rd_data(
+        n=5000, ate=0.0, slope=1.5, noise=0.4, seed=13
+    )
+    result = regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.5)
+    assert abs(result.estimate) < 0.2
+
+
+def test_rd_negative_effect():
+    running, _, outcome, cutoff, true_effect = simulate_rd_data(
+        n=5000, ate=-1.5, slope=1.0, noise=0.4, seed=17
+    )
+    result = regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.5)
+    assert abs(result.estimate - true_effect) < 0.2
+
+
+def test_rd_improves_on_naive_when_slope_biases_means():
+    running, treatment, outcome, cutoff, true_effect = simulate_rd_data(
+        n=8000, ate=2.0, slope=2.0, noise=0.3, seed=19
+    )
+    naive = outcome[treatment == 1].mean() - outcome[treatment == 0].mean()
+    result = regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.4)
+    assert abs(naive - true_effect) > 0.8
+    assert abs(result.estimate - true_effect) < 0.2
+
+
+def test_rd_nonzero_cutoff():
+    running, _, outcome, cutoff, true_effect = simulate_rd_data(
+        n=5000, cutoff=3.0, ate=1.5, slope=1.0, noise=0.3, seed=23
+    )
+    result = regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.5)
+    assert abs(result.estimate - true_effect) < 0.2
+    assert result.cutoff == pytest.approx(3.0)
+
+
+def test_rd_slope_jump_still_recovers_intercept():
+    running, _, outcome, cutoff, true_effect = simulate_rd_data(
+        n=6000, ate=2.0, slope=1.0, slope_jump=1.5, noise=0.3, seed=29
+    )
+    result = regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.5)
+    assert abs(result.estimate - true_effect) < 0.25
+
+
+def test_rd_automatic_bandwidth_recovers_effect():
+    running, _, outcome, cutoff, true_effect = simulate_rd_data(
+        n=6000, ate=2.0, slope=1.0, noise=0.4, seed=31
+    )
+    result = regression_discontinuity(running, outcome, cutoff=cutoff)
+    assert result.bandwidth > 0
+    assert np.isfinite(result.bandwidth)
+    assert abs(result.estimate - true_effect) < 0.25
+
+
+def test_rd_treated_below_cutoff():
+    running = np.array([-2.0, -1.0, 1.0, 2.0])
+    outcome = np.array([4.0, 3.0, 1.0, 2.0])
+    result = regression_discontinuity(
+        running,
+        outcome,
+        cutoff=0.0,
+        bandwidth=10.0,
+        kernel="uniform",
+        treated_above=False,
+    )
+    assert result.estimate == pytest.approx(2.0)
+    assert result.treated_above is False
+
+
+def test_rd_validates_sharp_treatment():
+    running, treatment, outcome, cutoff, true_effect = simulate_rd_data(
+        n=800, ate=2.0, seed=37
+    )
+    result = regression_discontinuity(
+        running, outcome, cutoff=cutoff, bandwidth=0.6, treatment=treatment
+    )
+    assert abs(result.estimate - true_effect) < 0.4
+    flipped = 1.0 - treatment
+    with pytest.raises(ValueError, match="sharp"):
+        regression_discontinuity(
+            running, outcome, cutoff=cutoff, bandwidth=0.6, treatment=flipped
+        )
+
+
+def test_rd_rejects_bad_bandwidth():
+    running, _, outcome, cutoff, _ = simulate_rd_data(n=200, seed=41)
+    with pytest.raises(ValueError):
+        regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.0)
+    with pytest.raises(ValueError):
+        regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=-1.0)
+
+
+def test_rd_rejects_unknown_kernel():
+    running, _, outcome, cutoff, _ = simulate_rd_data(n=200, seed=43)
+    with pytest.raises(ValueError):
+        regression_discontinuity(running, outcome, cutoff=cutoff, bandwidth=0.5, kernel="cosine")
+
+
+def test_rd_rejects_empty_side():
+    running = np.array([-0.2, -0.1, 0.1, 0.2])
+    outcome = np.array([1.0, 2.0, 3.0, 4.0])
+    with pytest.raises(ValueError):
+        regression_discontinuity(running, outcome, cutoff=0.0, bandwidth=0.05)
+
+
+def test_rd_rejects_length_mismatch():
+    with pytest.raises(ValueError):
+        regression_discontinuity(np.zeros(3), np.zeros(4), cutoff=0.0, bandwidth=1.0)
+
+
+def test_rd_rejects_nonfinite_running():
+    running = np.array([-1.0, np.nan, 1.0, 2.0])
+    outcome = np.arange(4.0)
+    with pytest.raises(ValueError):
+        regression_discontinuity(running, outcome, cutoff=0.0, bandwidth=2.0)
+
+
+def test_rd_rectangular_alias_is_uniform():
+    running = np.array([-2.0, -1.0, 1.0, 2.0])
+    outcome = np.array([0.0, 1.0, 5.0, 6.0])
+    result = regression_discontinuity(
+        running, outcome, cutoff=0.0, bandwidth=10.0, kernel="rectangular"
+    )
+    assert result.kernel == "uniform"
+    assert result.estimate == pytest.approx(2.0)

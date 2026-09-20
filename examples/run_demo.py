@@ -16,12 +16,14 @@ from causal_inference.estimators import (
     ipw_att,
     ipw_weights,
     propensity_matching,
+    regression_discontinuity,
     synthetic_control,
 )
 from causal_inference.evaluate import evaluate, standard_estimators
 from causal_inference.generators import (
     simulate_did_data,
     simulate_observational_data,
+    simulate_rd_data,
     simulate_synthetic_control_data,
 )
 from causal_inference.propensity import propensity_scores
@@ -100,6 +102,16 @@ def main(argv=None) -> int:
         f"(true {true_sc:.3f}, placebo p {sc.placebo_p_value:.3f})"
     )
 
+    rd_running, _, rd_outcome, rd_cutoff, true_rd = simulate_rd_data(
+        n=args.n, cutoff=0.0, ate=2.0, slope=1.0, seed=args.seed
+    )
+    rd = regression_discontinuity(rd_running, rd_outcome, cutoff=rd_cutoff)
+    print(
+        f"regression discontinuity on a simulated running-variable sample: "
+        f"{rd.estimate:.3f} (true {true_rd:.3f}, h={rd.bandwidth:.3f}, "
+        f"n_left={rd.n_left}, n_right={rd.n_right})"
+    )
+
     os.makedirs(args.out_dir, exist_ok=True)
     report_path = os.path.join(args.out_dir, "demo_report.md")
     extra_section = (
@@ -110,7 +122,12 @@ def main(argv=None) -> int:
         f"On a simulated donor panel the synthetic control estimate is "
         f"**{sc.estimate:.3f}** against a true effect of **{true_sc:.3f}**. "
         f"Pre-treatment RMSPE is {sc.pre_rmspe:.3f}; the in-space placebo "
-        f"p-value is {sc.placebo_p_value:.3f}."
+        f"p-value is {sc.placebo_p_value:.3f}.\n\n"
+        "## Regression discontinuity\n\n"
+        f"On a simulated sharp RD sample the local-linear estimate at the "
+        f"cutoff is **{rd.estimate:.3f}** against a true effect of "
+        f"**{true_rd:.3f}**. The Imbens–Kalyanaraman bandwidth is "
+        f"{rd.bandwidth:.3f} ({rd.n_left} left / {rd.n_right} right)."
     )
     markdown = render_report(
         X,
