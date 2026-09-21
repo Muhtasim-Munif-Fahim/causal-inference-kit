@@ -119,5 +119,7 @@ def test_demo_prints_estimates(capsys, tmp_path):
     assert "ipw (stabilized)" in captured.out
     assert "aipw (doubly robust)" in captured.out
     assert "bootstrap evaluation" in captured.out
+    assert "difference-in-differences" in captured.out
+    assert "two-way fixed effects" in captured.out
     assert "synthetic control" in captured.out
     assert "regression discontinuity" in captured.out

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from causal_inference.estimators import (
+    DifferenceInDifferencesResult,
     aipw_ate,
     difference_in_differences,
     difference_in_means,
@@ -369,31 +370,169 @@ def test_matching_uses_explicit_propensity():
 
 
 def test_did_recovers_effect_with_parallel_trends():
-    group, period, outcome, true_did = simulate_did_data(n=2000, seed=2)
-    estimate = difference_in_differences(group, period, outcome)
-    assert abs(estimate - true_did) < 0.2
+    unit, group, period, outcome, true_did = simulate_did_data(n=2000, seed=2)
+    result = difference_in_differences(group, period, outcome, unit=unit)
+    assert abs(result.estimate - true_did) < 0.2
+    assert result.se > 0
+    assert result.method == "2x2"
+    assert result.se_type == "cluster"
+    assert result.n_clusters == 2000
 
 
 def test_did_zero_effect():
-    group, period, outcome, _ = simulate_did_data(n=2000, ate=0.0, seed=4)
-    estimate = difference_in_differences(group, period, outcome)
-    assert abs(estimate) < 0.2
+    unit, group, period, outcome, _ = simulate_did_data(n=2000, ate=0.0, seed=4)
+    result = difference_in_differences(group, period, outcome, unit=unit)
+    assert abs(result.estimate) < 0.2
 
 
 def test_did_negative_effect():
-    group, period, outcome, true_did = simulate_did_data(n=2000, ate=-1.5, seed=6)
-    estimate = difference_in_differences(group, period, outcome)
-    assert abs(estimate - true_did) < 0.2
+    unit, group, period, outcome, true_did = simulate_did_data(n=2000, ate=-1.5, seed=6)
+    result = difference_in_differences(group, period, outcome, unit=unit)
+    assert abs(result.estimate - true_did) < 0.2
 
 
 def test_did_removes_time_trend_bias():
-    group, period, outcome, true_did = simulate_did_data(
+    unit, group, period, outcome, true_did = simulate_did_data(
         n=2000, ate=1.0, time_trend=5.0, seed=8
     )
     naive_pre_post = outcome[period == 1].mean() - outcome[period == 0].mean()
-    estimate = difference_in_differences(group, period, outcome)
+    result = difference_in_differences(group, period, outcome, unit=unit)
     assert abs(naive_pre_post - true_did) > 1.0
-    assert abs(estimate - true_did) < 0.2
+    assert abs(result.estimate - true_did) < 0.2
+
+
+def test_did_repeated_cross_section_robust_se():
+    _, group, period, outcome, true_did = simulate_did_data(n=2000, seed=2)
+    result = difference_in_differences(group, period, outcome)
+    assert abs(result.estimate - true_did) < 0.2
+    assert result.se > 0
+    assert result.se_type == "hc1"
+    assert result.n_units is None
+    assert result.n_clusters is None
+
+
+def test_did_clustered_matches_four_cell_point_estimate():
+    unit, group, period, outcome, _ = simulate_did_data(n=800, seed=10)
+    clustered = difference_in_differences(group, period, outcome, unit=unit)
+    robust = difference_in_differences(group, period, outcome)
+    assert clustered.estimate == pytest.approx(robust.estimate, abs=1e-10)
+    assert clustered.se_type == "cluster"
+    assert robust.se_type == "hc1"
+
+
+def test_did_hand_calculation():
+    group = np.array([1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    period = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+    outcome = np.array([1.0, 4.0, 2.0, 6.0, 0.0, 1.0, 1.0, 3.0])
+    unit = np.array([0, 0, 1, 1, 2, 2, 3, 3])
+    result = difference_in_differences(group, period, outcome, unit=unit)
+    assert result.estimate == pytest.approx(2.0)
+    assert result.se == pytest.approx(np.sqrt(0.5))
+    assert result.treated_mean_pre == pytest.approx(1.5)
+    assert result.treated_mean_post == pytest.approx(5.0)
+    assert result.control_mean_pre == pytest.approx(0.5)
+    assert result.control_mean_post == pytest.approx(2.0)
+    assert isinstance(result, DifferenceInDifferencesResult)
+
+
+def test_did_hand_calculation_without_unit():
+    group = np.array([1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    period = np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+    outcome = np.array([1.0, 4.0, 2.0, 6.0, 0.0, 1.0, 1.0, 3.0])
+    result = difference_in_differences(group, period, outcome)
+    assert result.estimate == pytest.approx(2.0)
+    # four independent cells: vars 0.5, 2.0, 0.5, 2.0 with n=2
+    assert result.se == pytest.approx(np.sqrt(2.5))
+
+
+def test_did_twfe_recovers_effect_on_multi_period_panel():
+    unit, group, period, outcome, true_did = simulate_did_data(
+        n=400, n_pre=3, n_post=3, ate=2.0, time_trend=1.0, seed=11
+    )
+    result = difference_in_differences(
+        group, period, outcome, unit=unit, treatment_time=3
+    )
+    assert result.method == "twfe"
+    assert result.se_type == "cluster"
+    assert result.n_times == 6
+    assert result.n_units == 400
+    assert abs(result.estimate - true_did) < 0.25
+    assert result.se > 0
+    assert abs(result.estimate - true_did) < 4.0 * result.se
+
+
+def test_did_twfe_matches_2x2_when_two_periods():
+    unit, group, period, outcome, _ = simulate_did_data(n=500, seed=13)
+    two_by_two = difference_in_differences(group, period, outcome, unit=unit)
+    twfe = difference_in_differences(
+        group, period, outcome, unit=unit, cluster=False
+    )
+    assert two_by_two.estimate == pytest.approx(twfe.estimate, abs=1e-8)
+
+
+def test_did_twfe_explicit_treatment_indicator():
+    unit, group, period, outcome, true_did = simulate_did_data(
+        n=300, n_pre=2, n_post=2, ate=1.5, seed=17
+    )
+    treatment = ((group == 1) & (period >= 2)).astype(float)
+    result = difference_in_differences(
+        group, period, outcome, unit=unit, treatment=treatment
+    )
+    assert result.method == "twfe"
+    assert abs(result.estimate - true_did) < 0.3
+
+
+def test_did_twfe_zero_and_negative_effects():
+    for ate, seed in ((0.0, 19), (-2.0, 23)):
+        unit, group, period, outcome, true_did = simulate_did_data(
+            n=350, n_pre=3, n_post=2, ate=ate, seed=seed
+        )
+        result = difference_in_differences(
+            group, period, outcome, unit=unit, treatment_time=3
+        )
+        assert abs(result.estimate - true_did) < 0.3
+
+
+def test_did_cluster_without_unit_raises():
+    _, group, period, outcome, _ = simulate_did_data(n=50, seed=1)
+    with pytest.raises(ValueError, match="clustered"):
+        difference_in_differences(group, period, outcome, cluster=True)
+
+
+def test_did_multi_period_without_unit_raises():
+    _, group, period, outcome, _ = simulate_did_data(
+        n=40, n_pre=2, n_post=2, seed=1
+    )
+    with pytest.raises(ValueError, match="unit identifiers"):
+        difference_in_differences(group, period, outcome)
+
+
+def test_did_multi_period_requires_treatment_time():
+    unit, group, period, outcome, _ = simulate_did_data(
+        n=40, n_pre=2, n_post=2, seed=1
+    )
+    with pytest.raises(ValueError, match="treatment_time"):
+        difference_in_differences(group, period, outcome, unit=unit)
+
+
+def test_did_collinear_treatment_raises():
+    unit = np.array([0, 0, 0, 1, 1, 1])
+    group = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    period = np.array([0.0, 1.0, 2.0, 0.0, 1.0, 2.0])
+    outcome = np.arange(6.0)
+    with pytest.raises(ValueError, match="collinear"):
+        difference_in_differences(
+            group, period, outcome, unit=unit, treatment_time=1
+        )
+
+
+def test_did_group_must_be_constant_within_unit():
+    unit = np.array([0, 0, 1, 1])
+    group = np.array([1.0, 0.0, 0.0, 0.0])
+    period = np.array([0.0, 1.0, 0.0, 1.0])
+    outcome = np.array([1.0, 2.0, 3.0, 4.0])
+    with pytest.raises(ValueError, match="constant within unit"):
+        difference_in_differences(group, period, outcome, unit=unit)
 
 
 def test_did_empty_cell_raises():
@@ -415,6 +554,10 @@ def test_did_rejects_invalid_values():
 def test_did_length_mismatch_raises():
     with pytest.raises(ValueError):
         difference_in_differences(np.zeros(3), np.zeros(4), np.zeros(3))
+    with pytest.raises(ValueError):
+        difference_in_differences(
+            np.zeros(4), np.zeros(4), np.zeros(4), unit=np.zeros(3)
+        )
 
 
 def _sc_long(treated, donors, times=None):
