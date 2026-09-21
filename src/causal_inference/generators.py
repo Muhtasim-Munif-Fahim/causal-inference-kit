@@ -116,49 +116,75 @@ def simulate_did_data(
     ate: float = 1.5,
     time_trend: float = 1.0,
     group_effect: float = 0.5,
+    n_pre: int = 1,
+    n_post: int = 1,
     seed: int = 0,
 ):
-    """Simulate a two-period, two-group panel for difference-in-differences.
+    """Simulate a panel with parallel trends for difference-in-differences.
 
-    Each unit is observed before (period 0) and after (period 1) a treatment
-    that applies to the treated group in the post period. Trends are parallel
-    by construction: both groups share the same time effect, so the
-    difference-in-differences estimator recovers ``ate`` exactly in
-    expectation.
+    Each unit is observed for ``n_pre`` pre-treatment periods and ``n_post``
+    post-treatment periods. Treatment applies to the treated group in every
+    post period (canonical simultaneous adoption). Trends are parallel by
+    construction: both groups share the same time effect, so two-period DiD
+    and two-way fixed effects recover ``ate`` in expectation.
+
+    With the default ``n_pre=1, n_post=1`` the design is the textbook
+    two-period, two-group panel. Periods are ``0, ..., n_pre + n_post - 1``
+    and treatment starts at time ``n_pre``.
 
     Parameters
     ----------
     n : int
-        Number of units, each observed in both periods.
+        Number of units, each observed in every period.
     ate : float
         True effect of the treatment on the treated group.
     time_trend : float
-        Common post-period shift shared by both groups.
+        Common linear time effect ``time_trend * t`` shared by both groups.
     group_effect : float
         Fixed outcome difference between groups.
+    n_pre : int
+        Number of pre-treatment periods.
+    n_post : int
+        Number of post-treatment periods.
     seed : int
 
     Returns
     -------
-    group : ndarray of shape (2n,)
-        Group indicator, 1 = treated.
-    period : ndarray of shape (2n,)
-        Period indicator, 1 = post.
-    outcome : ndarray of shape (2n,)
+    unit : ndarray of shape (n * n_times,)
+        Unit identifier ``0, ..., n - 1``.
+    group : ndarray of shape (n * n_times,)
+        Group indicator, 1 = treated (ever-treated).
+    period : ndarray of shape (n * n_times,)
+        Period index.
+    outcome : ndarray of shape (n * n_times,)
     true_did : float
+        The constant ATT ``ate``.
     """
+    if n < 1:
+        raise ValueError("n must be at least 1")
+    if n_pre < 1:
+        raise ValueError("n_pre must be at least 1")
+    if n_post < 1:
+        raise ValueError("n_post must be at least 1")
+
     rng = np.random.default_rng(seed)
-    group = rng.binomial(1, 0.5, size=n)
-    unit = rng.normal(size=n)
-    outcome = np.empty(2 * n)
-    for i in range(n):
-        g = group[i]
-        u = unit[i]
-        outcome[2 * i] = group_effect * g + u + rng.normal()
-        outcome[2 * i + 1] = group_effect * g + time_trend + ate * g + u + rng.normal()
-    group_all = np.repeat(group, 2)
-    period_all = np.tile([0.0, 1.0], n)
-    return group_all, period_all, outcome, float(ate)
+    group = rng.binomial(1, 0.5, size=n).astype(float)
+    unit_fe = rng.normal(size=n)
+    n_times = n_pre + n_post
+    noise = rng.normal(size=(n, n_times))
+    times = np.arange(n_times, dtype=float)
+    post = (times >= n_pre).astype(float)
+    outcome = (
+        group_effect * group[:, None]
+        + time_trend * times[None, :]
+        + ate * group[:, None] * post[None, :]
+        + unit_fe[:, None]
+        + noise
+    )
+    unit = np.repeat(np.arange(n), n_times)
+    group_all = np.repeat(group, n_times)
+    period_all = np.tile(times, n)
+    return unit, group_all, period_all, outcome.ravel(), float(ate)
 
 
 def simulate_synthetic_control_data(

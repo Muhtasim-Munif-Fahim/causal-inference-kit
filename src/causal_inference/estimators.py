@@ -469,41 +469,367 @@ def propensity_matching(
     return _match_ate(logit, outcome, treated, control, caliper, n_neighbors)
 
 
-def difference_in_differences(group, period, outcome) -> float:
-    """Two-period, two-group difference-in-differences estimate.
+@dataclass
+class DifferenceInDifferencesResult:
+    """Two-period or two-way fixed-effects difference-in-differences fit.
 
-    Returns ``(Ybar_treated_post - Ybar_treated_pre) - (Ybar_control_post -
+    Attributes
+    ----------
+    estimate : float
+        ATT under parallel trends: the two-by-two interaction, or the
+        coefficient on the treatment indicator in a two-way fixed-effects
+        regression.
+    se : float
+        Standard error. Clustered by unit when units are supplied and
+        ``cluster`` is true; otherwise heteroskedasticity-robust (four-cell
+        or HC1).
+    method : {"2x2", "twfe"}
+        ``"2x2"`` when there are two periods; ``"twfe"`` when more than two
+        periods are used with unit and time fixed effects.
+    se_type : {"cluster", "hc1"}
+        Variance estimator.
+    n : int
+        Number of observations.
+    n_units : int or None
+        Number of distinct units, or ``None`` when ``unit`` was omitted.
+    n_times : int
+        Number of distinct time periods.
+    n_clusters : int or None
+        Number of clusters used for the SE, or ``None`` for HC1.
+    n_treated_post : int
+        Observations with treatment switched on.
+    treated_mean_pre, treated_mean_post : float or None
+        Cell means in a two-period design; ``None`` for multi-period TWFE.
+    control_mean_pre, control_mean_post : float or None
+        Control-group cell means in a two-period design.
+    """
+
+    estimate: float
+    se: float
+    method: str
+    se_type: str
+    n: int
+    n_units: int | None
+    n_times: int
+    n_clusters: int | None
+    n_treated_post: int
+    treated_mean_pre: float | None = None
+    treated_mean_post: float | None = None
+    control_mean_pre: float | None = None
+    control_mean_post: float | None = None
+
+
+def _did_cell_mean_var(values: np.ndarray):
+    if values.size == 0:
+        raise ValueError("one of the group-period cells is empty")
+    mean = float(values.mean())
+    if values.size < 2:
+        return mean, 0.0, int(values.size)
+    return mean, float(values.var(ddof=1) / values.size), int(values.size)
+
+
+def _two_by_two_cells(group, period, outcome):
+    """Four-cell means, observation-robust SE, and the 2x2 ATT."""
+    times = np.unique(period)
+    if times.size != 2:
+        raise ValueError("two-period DiD requires exactly two distinct periods")
+    pre, post = times[0], times[1]
+
+    def stats(gval, pval):
+        return _did_cell_mean_var(outcome[(group == gval) & (period == pval)])
+
+    m11, v11, n11 = stats(1, post)
+    m10, v10, n10 = stats(1, pre)
+    m01, v01, n01 = stats(0, post)
+    m00, v00, n00 = stats(0, pre)
+    estimate = m11 - m10 - m01 + m00
+    se = float(np.sqrt(max(v11 + v10 + v01 + v00, 0.0)))
+    return {
+        "estimate": float(estimate),
+        "se": se,
+        "treated_mean_pre": m10,
+        "treated_mean_post": m11,
+        "control_mean_pre": m00,
+        "control_mean_post": m01,
+        "n_treated_post": n11,
+        "pre": pre,
+        "post": post,
+    }
+
+
+def _group_constant_within_unit(group, unit_index, n_units):
+    gmin = np.full(n_units, np.inf)
+    gmax = np.full(n_units, -np.inf)
+    np.minimum.at(gmin, unit_index, group)
+    np.maximum.at(gmax, unit_index, group)
+    if np.any(gmin != gmax):
+        raise ValueError("group must be constant within unit")
+
+
+def _balanced_first_diff(unit, group, period, outcome):
+    """Unit-level first-difference ATT and clustered SE, or ``None``."""
+    unit_ids, unit_index = np.unique(unit, return_inverse=True)
+    n_units = unit_ids.size
+    counts = np.bincount(unit_index, minlength=n_units)
+    if n_units < 2 or not np.all(counts == 2):
+        return None
+    times = np.unique(period)
+    if times.size != 2:
+        return None
+    group = np.asarray(group, dtype=float)
+    _group_constant_within_unit(group, unit_index, n_units)
+    order = np.lexsort((period, unit_index))
+    p_sorted = period[order]
+    pre, post = times[0], times[1]
+    if not (np.all(p_sorted[0::2] == pre) and np.all(p_sorted[1::2] == post)):
+        return None
+    y_sorted = outcome[order]
+    g_sorted = group[order]
+    delta = y_sorted[1::2] - y_sorted[0::2]
+    g = g_sorted[0::2]
+    treated = g == 1
+    if not treated.any() or not (~treated).any():
+        raise ValueError("both treatment groups must be present")
+    d1 = delta[treated]
+    d0 = delta[~treated]
+    estimate = float(d1.mean() - d0.mean())
+    v1 = 0.0 if d1.size < 2 else float(d1.var(ddof=1) / d1.size)
+    v0 = 0.0 if d0.size < 2 else float(d0.var(ddof=1) / d0.size)
+    se = float(np.sqrt(max(v1 + v0, 0.0)))
+    return estimate, se, n_units
+
+
+def _demean_within(values, unit_index, n_units, counts):
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 1:
+        sums = np.bincount(unit_index, weights=values, minlength=n_units)
+        return values - (sums / counts)[unit_index]
+    out = np.empty_like(values, dtype=float)
+    for j in range(values.shape[1]):
+        sums = np.bincount(unit_index, weights=values[:, j], minlength=n_units)
+        out[:, j] = values[:, j] - (sums / counts)[unit_index]
+    return out
+
+
+def _sandwich_se(X, resid, cluster_index=None):
+    """HC1 or cluster-robust SE of the last OLS coefficient."""
+    n, k = X.shape
+    xtx = X.T @ X
+    try:
+        xtx_inv = np.linalg.inv(xtx)
+    except np.linalg.LinAlgError:
+        xtx_inv = np.linalg.pinv(xtx)
+    if cluster_index is None:
+        meat = (X * (resid ** 2)[:, None]).T @ X
+        scale = n / max(n - k, 1)
+        n_clusters = None
+    else:
+        n_clusters = int(np.max(cluster_index)) + 1
+        scores = np.zeros((n_clusters, k))
+        np.add.at(scores, cluster_index, X * resid[:, None])
+        meat = scores.T @ scores
+        g = n_clusters
+        scale = (g / max(g - 1, 1)) * ((n - 1) / max(n - k, 1))
+    variance = float(np.real((scale * (xtx_inv @ meat @ xtx_inv))[-1, -1]))
+    if not np.isfinite(variance):
+        variance = 0.0
+    return float(np.sqrt(max(variance, 0.0))), n_clusters
+
+
+def _twfe(unit, time, treatment, outcome, cluster: bool):
+    """Unit and time FE regression of ``outcome`` on ``treatment``."""
+    unit_ids, unit_index = np.unique(unit, return_inverse=True)
+    time_ids, time_index = np.unique(time, return_inverse=True)
+    n_units = unit_ids.size
+    n_times = time_ids.size
+    if n_times < 2:
+        raise ValueError("at least two time periods are required")
+    if n_units < 2:
+        raise ValueError("at least two units are required")
+    counts = np.bincount(unit_index, minlength=n_units).astype(float)
+    y = _demean_within(outcome, unit_index, n_units, counts)
+    time_dummies = np.eye(n_times, dtype=float)[time_index][:, 1:]
+    d = np.asarray(treatment, dtype=float)
+    X = np.column_stack(
+        [
+            _demean_within(time_dummies, unit_index, n_units, counts),
+            _demean_within(d, unit_index, n_units, counts),
+        ]
+    )
+    if X.shape[1] > 1:
+        others = X[:, :-1]
+        d_resid = X[:, -1] - others @ np.linalg.lstsq(others, X[:, -1], rcond=None)[0]
+    else:
+        d_resid = X[:, -1]
+    if float(np.dot(d_resid, d_resid)) < 1e-12:
+        raise ValueError("treatment is collinear with unit and time fixed effects")
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    se, n_clusters = _sandwich_se(
+        X, resid, cluster_index=unit_index if cluster else None
+    )
+    return float(coef[-1]), se, n_units, n_times, n_clusters, int((d == 1).sum())
+
+
+def difference_in_differences(
+    group,
+    period,
+    outcome,
+    unit=None,
+    treatment=None,
+    treatment_time=None,
+    cluster: bool | None = None,
+) -> DifferenceInDifferencesResult:
+    """Difference-in-differences ATT with clustered or robust standard errors.
+
+    In the two-period, two-group design the estimate is
+
+    ``(Ybar_treated_post - Ybar_treated_pre) - (Ybar_control_post -
     Ybar_control_pre)``.
+
+    When ``unit`` is supplied and each unit is observed once in each of two
+    periods, the same ATT is formed from unit-level first differences and
+    the standard error is clustered at the unit (the usual panel DiD SE).
+    Without unit identifiers the four cells are treated as independent
+    samples and the SE is heteroskedasticity-robust.
+
+    With more than two periods the estimator is two-way fixed effects:
+    ``Y_it = a_i + b_t + tau D_it + e_it``, with ``D_it`` equal to
+    ``treatment`` when given, otherwise ``group * 1{period >= treatment_time}``.
+    The coefficient ``tau`` is the ATT under parallel trends and canonical
+    (simultaneous) adoption. Staggered adoption can produce negative TWFE
+    weights; pass a two-period panel or a canonical post indicator instead.
 
     Parameters
     ----------
     group : array-like of shape (n,)
-        Group indicator, 1 = treated.
+        Group indicator, 1 = treated (ever-treated). Must be constant
+        within ``unit`` when units are supplied.
     period : array-like of shape (n,)
-        Period indicator, 1 = post.
+        Period identifier. In a two-period design the later period is
+        treated as post unless ``treatment_time`` is given.
     outcome : array-like of shape (n,)
+    unit : array-like of shape (n,), optional
+        Unit identifier. Enables unit fixed effects / first differences
+        and cluster-robust standard errors.
+    treatment : array-like of shape (n,), optional
+        Treatment status ``D_it``. If omitted, ``D_it`` is
+        ``group * 1{post}`` for two periods, or
+        ``group * 1{period >= treatment_time}`` for multiple periods.
+    treatment_time : optional
+        First post-treatment period when ``treatment`` is omitted.
+    cluster : bool, optional
+        If true, cluster the SE by ``unit``. If omitted, cluster when
+        ``unit`` is supplied and use HC1 otherwise.
 
     Returns
     -------
-    float
+    DifferenceInDifferencesResult
     """
     group = _validate_treatment(group)
-    period = _validate_treatment(period)
+    period = np.asarray(period).ravel()
     outcome = np.asarray(outcome, dtype=float).ravel()
     if not (group.shape[0] == period.shape[0] == outcome.shape[0]):
         raise ValueError("group, period and outcome must have the same length")
+    if group.shape[0] == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+    if unit is not None:
+        unit = np.asarray(unit).ravel()
+        if unit.shape[0] != group.shape[0]:
+            raise ValueError("unit must have the same length as group")
+    if cluster is None:
+        cluster = unit is not None
+    if cluster and unit is None:
+        raise ValueError("clustered standard errors require unit identifiers")
 
-    def cell_mean(sel):
-        values = outcome[sel]
-        if values.size == 0:
-            raise ValueError("one of the group-period cells is empty")
-        return values.mean()
+    times = np.unique(period)
+    n_times = int(times.size)
+    if n_times < 2:
+        raise ValueError("at least two time periods are required")
+    if n_times > 2 and unit is None:
+        raise ValueError("unit identifiers are required for multi-period TWFE")
 
-    return float(
-        cell_mean((group == 1) & (period == 1))
-        - cell_mean((group == 1) & (period == 0))
-        - cell_mean((group == 0) & (period == 1))
-        + cell_mean((group == 0) & (period == 0))
+    if treatment is not None:
+        treatment = _validate_treatment(treatment)
+        if treatment.shape[0] != group.shape[0]:
+            raise ValueError("treatment must have the same length as group")
+    elif n_times == 2 and treatment_time is None:
+        treatment = ((group == 1) & (period == times[-1])).astype(float)
+    elif treatment_time is not None:
+        treatment = ((group == 1) & (period >= treatment_time)).astype(float)
+    else:
+        raise ValueError(
+            "multi-period DiD requires treatment or treatment_time when there "
+            "are more than two distinct periods"
+        )
+    if not ((treatment == 1).any() and (treatment == 0).any()):
+        raise ValueError("both treated and untreated observations must be present")
+
+    n = int(group.shape[0])
+    cell = None
+    cell_error = None
+    if n_times == 2:
+        try:
+            cell = _two_by_two_cells(group, period, outcome)
+        except ValueError as exc:
+            cell_error = exc
+
+    if unit is None:
+        if cell is not None:
+            return DifferenceInDifferencesResult(
+                estimate=cell["estimate"],
+                se=cell["se"],
+                method="2x2",
+                se_type="hc1",
+                n=n,
+                n_units=None,
+                n_times=n_times,
+                n_clusters=None,
+                n_treated_post=int((treatment == 1).sum()),
+                treated_mean_pre=cell["treated_mean_pre"],
+                treated_mean_post=cell["treated_mean_post"],
+                control_mean_pre=cell["control_mean_pre"],
+                control_mean_post=cell["control_mean_post"],
+            )
+        if cell_error is not None:
+            raise cell_error
+        raise ValueError("unit identifiers are required for multi-period TWFE")
+
+    method = "2x2" if n_times == 2 else "twfe"
+    first_diff = None
+    if n_times == 2 and cluster:
+        first_diff = _balanced_first_diff(unit, group, period, outcome)
+
+    if first_diff is not None:
+        estimate, se, n_units = first_diff
+        n_clusters = n_units
+        se_type = "cluster"
+        n_treated_post = int((treatment == 1).sum())
+    else:
+        estimate, se, n_units, n_times_fit, n_clusters, n_treated_post = _twfe(
+            unit, period, treatment, outcome, cluster=cluster
+        )
+        n_times = n_times_fit
+        se_type = "cluster" if cluster else "hc1"
+        if not cluster:
+            n_clusters = None
+
+    return DifferenceInDifferencesResult(
+        estimate=estimate,
+        se=se,
+        method=method,
+        se_type=se_type,
+        n=n,
+        n_units=int(n_units),
+        n_times=int(n_times),
+        n_clusters=None if n_clusters is None else int(n_clusters),
+        n_treated_post=n_treated_post,
+        treated_mean_pre=None if cell is None else cell["treated_mean_pre"],
+        treated_mean_post=None if cell is None else cell["treated_mean_post"],
+        control_mean_pre=None if cell is None else cell["control_mean_pre"],
+        control_mean_post=None if cell is None else cell["control_mean_post"],
     )
 
 

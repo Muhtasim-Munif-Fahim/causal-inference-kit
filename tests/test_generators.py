@@ -154,12 +154,14 @@ def test_outcome_is_continuous_and_finite():
 
 
 def test_did_shapes():
-    group, period, outcome, true_did = simulate_did_data(n=300, seed=1)
+    unit, group, period, outcome, true_did = simulate_did_data(n=300, seed=1)
+    assert unit.shape == (600,)
     assert group.shape == (600,)
     assert period.shape == (600,)
     assert outcome.shape == (600,)
     assert true_did == pytest.approx(1.5)
     assert set(np.unique(period)) == {0.0, 1.0}
+    assert set(np.unique(unit)) == set(range(300))
 
 
 def test_did_seed_reproducibility():
@@ -170,18 +172,47 @@ def test_did_seed_reproducibility():
 
 
 def test_did_has_both_groups_in_both_periods():
-    group, period, _, _ = simulate_did_data(n=500, seed=9)
+    _, group, period, _, _ = simulate_did_data(n=500, seed=9)
     for g in (0.0, 1.0):
         for p in (0.0, 1.0):
             assert ((group == g) & (period == p)).sum() > 100
 
 
 def test_did_time_trend_shifts_both_groups():
-    group, period, outcome, _ = simulate_did_data(n=2000, ate=0.0, time_trend=2.0, seed=11)
+    _, group, period, outcome, _ = simulate_did_data(
+        n=2000, ate=0.0, time_trend=2.0, seed=11
+    )
     for g in (0.0, 1.0):
         pre = outcome[(group == g) & (period == 0)].mean()
         post = outcome[(group == g) & (period == 1)].mean()
         assert post - pre > 1.5
+
+
+def test_did_multi_period_shapes_and_adoption():
+    unit, group, period, outcome, true_did = simulate_did_data(
+        n=80, n_pre=3, n_post=2, ate=2.5, seed=13
+    )
+    assert unit.shape == (80 * 5,)
+    assert set(np.unique(period)) == {0.0, 1.0, 2.0, 3.0, 4.0}
+    assert true_did == pytest.approx(2.5)
+    treated_post = (group == 1) & (period >= 3)
+    treated_pre = (group == 1) & (period < 3)
+    control_post = (group == 0) & (period >= 3)
+    control_pre = (group == 0) & (period < 3)
+    assert treated_post.sum() > 0
+    assert treated_pre.sum() > 0
+    assert control_post.sum() > 0
+    assert control_pre.sum() > 0
+    assert np.isfinite(outcome).all()
+
+
+def test_did_rejects_bad_dimensions():
+    with pytest.raises(ValueError):
+        simulate_did_data(n=0)
+    with pytest.raises(ValueError):
+        simulate_did_data(n_pre=0)
+    with pytest.raises(ValueError):
+        simulate_did_data(n_post=0)
 
 
 def test_sc_shapes_and_ids():

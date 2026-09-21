@@ -87,9 +87,25 @@ def main(argv=None) -> int:
             f"{result.bias:>8.3f}{result.rmse:>8.3f}"
         )
 
-    group, period, did_outcome, true_did = simulate_did_data(n=args.n, seed=args.seed)
-    did = difference_in_differences(group, period, did_outcome)
-    print(f"\ndifference-in-differences on a simulated panel: {did:.3f} (true {true_did:.3f})")
+    unit, group, period, did_outcome, true_did = simulate_did_data(
+        n=args.n, seed=args.seed
+    )
+    did = difference_in_differences(group, period, did_outcome, unit=unit)
+    print(
+        f"\ndifference-in-differences on a simulated panel: {did.estimate:.3f} "
+        f"(true {true_did:.3f}, se {did.se:.3f}, {did.se_type})"
+    )
+
+    unit_twfe, group_twfe, period_twfe, y_twfe, true_twfe = simulate_did_data(
+        n=max(args.n // 4, 200), n_pre=3, n_post=3, ate=true_did, seed=args.seed
+    )
+    twfe = difference_in_differences(
+        group_twfe, period_twfe, y_twfe, unit=unit_twfe, treatment_time=3
+    )
+    print(
+        f"two-way fixed effects on a multi-period panel: {twfe.estimate:.3f} "
+        f"(true {true_twfe:.3f}, se {twfe.se:.3f}, {twfe.method})"
+    )
 
     sc_unit, sc_time, sc_outcome, sc_treated, sc_t0, true_sc = simulate_synthetic_control_data(
         n_donors=8, n_pre=12, n_post=8, ate=5.0, seed=args.seed
@@ -117,7 +133,11 @@ def main(argv=None) -> int:
     extra_section = (
         "## Difference-in-differences\n\n"
         f"On a simulated two-period two-group panel the DiD estimate is "
-        f"**{did:.3f}** against a true effect of **{true_did:.3f}**.\n\n"
+        f"**{did.estimate:.3f}** (se {did.se:.3f}, {did.se_type}) against a "
+        f"true effect of **{true_did:.3f}**.\n\n"
+        f"On a simulated six-period panel the two-way fixed-effects estimate "
+        f"is **{twfe.estimate:.3f}** (se {twfe.se:.3f}) against a true effect "
+        f"of **{true_twfe:.3f}**.\n\n"
         "## Synthetic control\n\n"
         f"On a simulated donor panel the synthetic control estimate is "
         f"**{sc.estimate:.3f}** against a true effect of **{true_sc:.3f}**. "

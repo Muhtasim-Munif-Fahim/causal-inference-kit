@@ -12,9 +12,9 @@ are required.
 
 | Module | Purpose |
 | --- | --- |
-| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period panel for DiD; a donor panel for synthetic control; a running-variable sample for sharp RD |
+| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, difference-in-differences, Abadie synthetic control, sharp local-linear regression discontinuity |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), Abadie synthetic control, sharp local-linear regression discontinuity |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -30,7 +30,7 @@ are required.
 | AIPW (augmented IPW) | ATE | Doubly robust: OLS outcome regression plus IPW residual correction |
 | Propensity matching | ATT | Greedy nearest-neighbor in logit space, with/without replacement, optional caliper |
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
-| Difference-in-differences | ATT (DiD) | Two-period, two-group |
+| Difference-in-differences | ATT (DiD) | Two-period 2x2 or multi-period TWFE; clustered-by-unit or HC1 robust SE |
 | Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
 | Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
 
@@ -90,8 +90,35 @@ python examples/run_demo.py
 ```
 
 simulates a confounded sample, runs every estimator, evaluates them with a
-bootstrap, runs a DiD panel, a synthetic-control donor panel and a sharp
+bootstrap, runs a DiD / TWFE panel, a synthetic-control donor panel and a sharp
 RD sample, and writes `examples/output/demo_report.md`.
+
+### Difference-in-differences (Python)
+
+```python
+from causal_inference import simulate_did_data, difference_in_differences
+
+unit, group, period, outcome, true_att = simulate_did_data(n=1000, seed=7)
+result = difference_in_differences(group, period, outcome, unit=unit)
+print(result.estimate, true_att, result.se, result.se_type)
+
+# multi-period two-way fixed effects (canonical adoption at t = n_pre)
+unit, group, period, outcome, true_att = simulate_did_data(
+    n=400, n_pre=3, n_post=3, ate=1.5, seed=7
+)
+result = difference_in_differences(
+    group, period, outcome, unit=unit, treatment_time=3
+)
+print(result.estimate, result.se, result.method)
+```
+
+The two-period estimator is the usual 2x2 interaction. Passing `unit` uses
+unit-level first differences and clusters the standard error at the unit;
+omit `unit` for a repeated cross-section with a four-cell robust SE. With
+more than two periods the same function fits two-way fixed effects
+`Y_it = a_i + b_t + tau D_it + e_it` and reports a cluster-robust SE.
+That TWFE coefficient is an ATT under parallel trends and simultaneous
+adoption; staggered timing can produce negative weights.
 
 ### Synthetic control (Python)
 
@@ -150,7 +177,9 @@ assumptions that are not testable from the data alone:
   Both can be wrong at once, and then AIPW is biased like any other
   observational estimator.
 - **Difference-in-differences:** requires parallel trends between groups and
-  no anticipation of the treatment in the pre period.
+  no anticipation of the treatment in the pre period. Two-way fixed effects
+  additionally assume canonical (simultaneous) adoption; staggered timing
+  can assign negative weights to some treatment effects.
 - **Synthetic control:** the treated unit's pre-treatment path must be
   well approximated by a convex combination of untreated donors, with no
   anticipation. In-space placebo ranks are a diagnostic, not a conventional

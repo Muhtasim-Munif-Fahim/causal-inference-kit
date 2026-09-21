@@ -2,6 +2,7 @@
 
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
+    DifferenceInDifferencesResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
@@ -35,6 +36,7 @@ from .report import render_report
 __version__ = "0.1.0"
 
 __all__ = [
+    "DifferenceInDifferencesResult",
     "EvaluationResult",
     "LogisticFit",
     "PropensityHistogram",
