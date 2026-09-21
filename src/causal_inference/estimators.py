@@ -748,6 +748,8 @@ def difference_in_differences(
     n_times = int(times.size)
     if n_times < 2:
         raise ValueError("at least two time periods are required")
+    if n_times > 2 and unit is None:
+        raise ValueError("unit identifiers are required for multi-period TWFE")
 
     if treatment is not None:
         treatment = _validate_treatment(treatment)

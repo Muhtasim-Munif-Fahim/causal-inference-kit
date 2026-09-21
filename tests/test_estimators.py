@@ -528,7 +528,7 @@ def test_did_collinear_treatment_raises():
 
 def test_did_group_must_be_constant_within_unit():
     unit = np.array([0, 0, 1, 1])
-    group = np.array([1.0, 0.0, 0.0, 0.0])
+    group = np.array([1.0, 1.0, 1.0, 0.0])
     period = np.array([0.0, 1.0, 0.0, 1.0])
     outcome = np.array([1.0, 2.0, 3.0, 4.0])
     with pytest.raises(ValueError, match="constant within unit"):
