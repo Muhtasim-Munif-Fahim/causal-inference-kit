@@ -3,6 +3,7 @@
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
     DifferenceInDifferencesResult,
+    InstrumentalVariablesResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
@@ -15,9 +16,11 @@ from .estimators import (
     propensity_matching,
     regression_discontinuity,
     synthetic_control,
+    two_stage_least_squares,
 )
 from .generators import (
     simulate_did_data,
+    simulate_iv_data,
     simulate_observational_data,
     simulate_rd_data,
     simulate_synthetic_control_data,
@@ -38,6 +41,7 @@ __version__ = "0.1.0"
 __all__ = [
     "DifferenceInDifferencesResult",
     "EvaluationResult",
+    "InstrumentalVariablesResult",
     "LogisticFit",
     "PropensityHistogram",
     "RegressionDiscontinuityResult",
@@ -57,11 +61,13 @@ __all__ = [
     "regression_discontinuity",
     "render_report",
     "simulate_did_data",
+    "simulate_iv_data",
     "simulate_observational_data",
     "simulate_rd_data",
     "simulate_synthetic_control_data",
     "standard_estimators",
     "standardized_mean_differences",
     "synthetic_control",
+    "two_stage_least_squares",
     "weighted_standardized_mean_differences",
 ]

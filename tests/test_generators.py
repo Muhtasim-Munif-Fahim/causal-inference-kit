@@ -5,6 +5,7 @@ import pytest
 
 from causal_inference.generators import (
     simulate_did_data,
+    simulate_iv_data,
     simulate_observational_data,
     simulate_rd_data,
     simulate_synthetic_control_data,
@@ -319,3 +320,80 @@ def test_rd_rejects_bad_arguments():
         simulate_rd_data(spread=0.0)
     with pytest.raises(ValueError):
         simulate_rd_data(noise=-0.1)
+
+
+def test_iv_shapes_and_one_sided_noncompliance():
+    instrument, treatment, outcome, covariates, true_effect = simulate_iv_data(
+        n=800, late=2.5, instrument_prob=0.4, compliance=0.5, n_covariates=3, seed=1
+    )
+    assert instrument.shape == (800,)
+    assert treatment.shape == (800,)
+    assert outcome.shape == (800,)
+    assert covariates.shape == (800, 3)
+    assert true_effect == pytest.approx(2.5)
+    assert set(np.unique(instrument)) == {0.0, 1.0}
+    assert set(np.unique(treatment)) <= {0.0, 1.0}
+    assert np.all(treatment[instrument == 0] == 0)
+    assert np.isfinite(outcome).all()
+    assert treatment[instrument == 1].mean() == pytest.approx(0.5, abs=0.08)
+
+
+def test_iv_seed_reproducibility():
+    a = simulate_iv_data(n=400, n_covariates=2, seed=5)
+    b = simulate_iv_data(n=400, n_covariates=2, seed=5)
+    for left, right in zip(a, b):
+        np.testing.assert_array_equal(left, right)
+
+
+def test_iv_different_seeds_differ():
+    a = simulate_iv_data(n=400, seed=1)
+    b = simulate_iv_data(n=400, seed=2)
+    assert not np.array_equal(a[2], b[2])
+
+
+def test_iv_noise_free_outcome_is_late_times_treatment():
+    instrument, treatment, outcome, covariates, late = simulate_iv_data(
+        n=300, late=4.0, confounding=0.0, noise=0.0, seed=11
+    )
+    assert covariates.shape == (300, 0)
+    np.testing.assert_allclose(outcome, late * treatment)
+    assert np.any(instrument == 0)
+    assert np.any(instrument == 1)
+
+
+def test_iv_covariates_shift_outcome():
+    _, _, outcome, covariates, _ = simulate_iv_data(
+        n=200,
+        late=0.0,
+        confounding=0.0,
+        noise=0.0,
+        n_covariates=2,
+        covariate_effect=2.0,
+        seed=13,
+    )
+    np.testing.assert_allclose(outcome, 2.0 * covariates.sum(axis=1))
+
+
+def test_iv_full_compliance_sets_treatment_equal_to_instrument():
+    instrument, treatment, _, _, late = simulate_iv_data(
+        n=100, late=1.0, compliance=1.0, seed=15
+    )
+    np.testing.assert_array_equal(treatment, instrument)
+    assert late == pytest.approx(1.0)
+
+
+def test_iv_rejects_bad_arguments():
+    with pytest.raises(ValueError):
+        simulate_iv_data(n=1)
+    with pytest.raises(ValueError):
+        simulate_iv_data(instrument_prob=0.0)
+    with pytest.raises(ValueError):
+        simulate_iv_data(instrument_prob=1.0)
+    with pytest.raises(ValueError):
+        simulate_iv_data(compliance=0.0)
+    with pytest.raises(ValueError):
+        simulate_iv_data(compliance=1.1)
+    with pytest.raises(ValueError):
+        simulate_iv_data(noise=-0.1)
+    with pytest.raises(ValueError):
+        simulate_iv_data(n_covariates=-1)

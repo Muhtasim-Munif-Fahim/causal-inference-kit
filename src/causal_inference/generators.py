@@ -1,4 +1,4 @@
-"""Synthetic observational data with known ground-truth effects."""
+"""Synthetic data with known ground-truth treatment effects."""
 
 from __future__ import annotations
 
@@ -364,3 +364,113 @@ def simulate_rd_data(
         + noise * rng.normal(size=n)
     )
     return running, treatment, outcome, float(cutoff), float(ate)
+
+
+def simulate_iv_data(
+    n: int = 2000,
+    late: float = 2.0,
+    instrument_prob: float = 0.5,
+    compliance: float = 0.5,
+    confounding: float = 1.0,
+    noise: float = 1.0,
+    n_covariates: int = 0,
+    covariate_effect: float = 1.0,
+    seed: int = 0,
+):
+    """Simulate an encouragement design with one-sided noncompliance.
+
+    The instrument ``Z`` is randomly assigned. Only compliers can be
+    treated, and only when they are encouraged, so ``D(0) = 0`` and the
+    observed treatment is ``D = Z * C``. Compliance is more common among
+    units with a large unobserved confounder when ``confounding`` is
+    nonzero, and that same confounder shifts the outcome. Ordinary least
+    squares is then biased. The treatment effect is the constant
+    ``late``, so two-stage least squares recovers it: the Wald estimand
+    is the complier LATE, which equals the ATT because every treated
+    unit is a complier.
+
+    Optional covariates are independent of ``Z`` and of compliance. They
+    enter the outcome linearly. Including them in 2SLS is not required
+    for consistency when ``Z`` is randomized, but it soaks up outcome
+    variation.
+
+    Parameters
+    ----------
+    n : int
+        Number of units. At least 2.
+    late : float
+        Constant treatment effect. This is the complier LATE and the ATT.
+    instrument_prob : float
+        Share of units offered the instrument, in ``(0, 1)``. The share
+        is rounded to a count that leaves both instrument arms nonempty.
+    compliance : float
+        Share of compliers, in ``(0, 1]``. ``1`` means the instrument is
+        taken up by everyone (``D = Z``).
+    confounding : float
+        How strongly the unobserved confounder selects compliers and
+        shifts the outcome. Zero confounding makes compliance independent
+        of the outcome error, so OLS is consistent as well.
+    noise : float
+        Standard deviation of an idiosyncratic outcome shock, independent
+        of the instrument, the confounder and the covariates.
+    n_covariates : int
+        Number of exogenous standard-normal covariates.
+    covariate_effect : float
+        Coefficient on each covariate in the outcome. Every covariate
+        uses this same coefficient.
+    seed : int
+
+    Returns
+    -------
+    instrument : ndarray of shape (n,)
+        Binary encouragement indicator.
+    treatment : ndarray of shape (n,)
+        Binary endogenous treatment. Zero whenever the instrument is zero.
+    outcome : ndarray of shape (n,)
+    covariates : ndarray of shape (n, n_covariates)
+        Empty with shape ``(n, 0)`` when ``n_covariates`` is 0.
+    true_effect : float
+        The complier LATE ``late``.
+    """
+    if n < 2:
+        raise ValueError("n must be at least 2")
+    if not 0.0 < instrument_prob < 1.0:
+        raise ValueError("instrument_prob must lie strictly between 0 and 1")
+    if not 0.0 < compliance <= 1.0:
+        raise ValueError("compliance must lie in (0, 1]")
+    if noise < 0:
+        raise ValueError("noise must be non-negative")
+    if n_covariates < 0:
+        raise ValueError("n_covariates must be non-negative")
+
+    rng = np.random.default_rng(seed)
+    confounder = rng.normal(size=n)
+    comply_noise = rng.normal(size=n)
+    n_encouraged = int(round(instrument_prob * n))
+    n_encouraged = min(max(n_encouraged, 1), n - 1)
+    instrument = np.zeros(n)
+    instrument[:n_encouraged] = 1.0
+    rng.shuffle(instrument)
+
+    if compliance == 1.0:
+        comply = np.ones(n)
+    else:
+        n_comply = int(round(compliance * n))
+        n_comply = min(max(n_comply, 1), n - 1)
+        score = confounding * confounder + comply_noise
+        comply = np.zeros(n)
+        comply[np.argsort(score)[-n_comply:]] = 1.0
+
+    treatment = instrument * comply
+    if n_covariates:
+        covariates = rng.normal(size=(n, n_covariates))
+    else:
+        covariates = np.empty((n, 0))
+    outcome = (
+        late * treatment
+        + confounding * confounder
+        + noise * rng.normal(size=n)
+    )
+    if n_covariates:
+        outcome = outcome + covariate_effect * covariates.sum(axis=1)
+    return instrument, treatment, outcome, covariates, float(late)

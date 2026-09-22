@@ -100,6 +100,7 @@ def test_assumption_caveats_mentions_key_assumptions():
         "double robustness",
         "synthetic control",
         "regression discontinuity",
+        "instrumental variables",
     ):
         assert keyword.lower() in text.lower()
 
