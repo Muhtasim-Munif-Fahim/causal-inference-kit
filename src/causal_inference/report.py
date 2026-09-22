@@ -149,6 +149,14 @@ def assumption_caveats() -> str:
         "must switch deterministically there. The estimate is the jump at "
         "the threshold, not an ATE for the whole sample. Bandwidth choice "
         "trades bias against variance.\n"
+        "- **Instrumental variables (2SLS):** the instrument must shift "
+        "treatment (relevance; a small first-stage F is a weak instrument), "
+        "affect the outcome only through treatment (exclusion), and be as "
+        "good as randomly assigned given the covariates (independence). "
+        "With a binary instrument the estimate is a complier LATE. "
+        "One-sided noncompliance makes that LATE equal the ATT. The "
+        "reported standard error is heteroskedasticity-robust (HC1). Weak "
+        "instruments invalidate the usual normal approximation.\n"
     )
 
 

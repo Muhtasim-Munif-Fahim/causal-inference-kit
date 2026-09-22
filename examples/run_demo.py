@@ -18,10 +18,12 @@ from causal_inference.estimators import (
     propensity_matching,
     regression_discontinuity,
     synthetic_control,
+    two_stage_least_squares,
 )
 from causal_inference.evaluate import evaluate, standard_estimators
 from causal_inference.generators import (
     simulate_did_data,
+    simulate_iv_data,
     simulate_observational_data,
     simulate_rd_data,
     simulate_synthetic_control_data,
@@ -128,6 +130,16 @@ def main(argv=None) -> int:
         f"n_left={rd.n_left}, n_right={rd.n_right})"
     )
 
+    iv_z, iv_d, iv_y, _, true_iv = simulate_iv_data(
+        n=args.n, late=2.0, compliance=0.5, confounding=1.5, noise=0.5, seed=args.seed
+    )
+    iv = two_stage_least_squares(iv_z, iv_d, iv_y)
+    print(
+        f"two-stage least squares on a simulated encouragement design: "
+        f"{iv.estimate:.3f} (true {true_iv:.3f}, se {iv.se:.3f}, "
+        f"first-stage F {iv.first_stage_f:.1f})"
+    )
+
     os.makedirs(args.out_dir, exist_ok=True)
     report_path = os.path.join(args.out_dir, "demo_report.md")
     extra_section = (
@@ -147,7 +159,12 @@ def main(argv=None) -> int:
         f"On a simulated sharp RD sample the local-linear estimate at the "
         f"cutoff is **{rd.estimate:.3f}** against a true effect of "
         f"**{true_rd:.3f}**. The Imbens–Kalyanaraman bandwidth is "
-        f"{rd.bandwidth:.3f} ({rd.n_left} left / {rd.n_right} right)."
+        f"{rd.bandwidth:.3f} ({rd.n_left} left / {rd.n_right} right).\n\n"
+        "## Instrumental variables\n\n"
+        f"On a simulated encouragement design with one-sided noncompliance "
+        f"the 2SLS estimate is **{iv.estimate:.3f}** (robust se {iv.se:.3f}, "
+        f"first-stage F {iv.first_stage_f:.1f}) against a complier LATE of "
+        f"**{true_iv:.3f}**."
     )
     markdown = render_report(
         X,

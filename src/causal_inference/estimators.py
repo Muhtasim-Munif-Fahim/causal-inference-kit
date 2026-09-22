@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control, RD."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control, RD, 2SLS."""
 
 from __future__ import annotations
 
@@ -1390,4 +1390,252 @@ def regression_discontinuity(
         slope_right=b_right,
         se=float(np.sqrt(var_left + var_right)),
         treated_above=bool(treated_above),
+    )
+
+
+def _coerce_block(values, name: str) -> np.ndarray:
+    """Return ``values`` as a finite 2d array with one column if it was 1d."""
+    block = np.asarray(values, dtype=float)
+    if block.ndim == 1:
+        block = block.reshape(-1, 1)
+    if block.ndim != 2:
+        raise ValueError(f"{name} must be a 1d or 2d array")
+    if block.shape[1] == 0:
+        raise ValueError(f"{name} must have at least one column")
+    if block.shape[0] == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(block)):
+        raise ValueError(f"{name} must be finite")
+    return block
+
+
+def _is_full_column_rank(A: np.ndarray, tol: float = 1e-10) -> bool:
+    if A.shape[0] < A.shape[1] or A.shape[1] == 0:
+        return False
+    singular = np.linalg.svd(A, compute_uv=False)
+    scale = float(singular[0])
+    if not np.isfinite(scale) or scale <= tol:
+        return False
+    return bool(float(singular[-1]) > tol * scale)
+
+
+def _hc1_covariance(X: np.ndarray, resid: np.ndarray) -> np.ndarray:
+    """HC1 covariance of a coefficient vector.
+
+    ``resid`` is the residual that enters the meat. For 2SLS, ``X`` is the
+    first-stage projection of the structural regressors and ``resid`` is
+    the structural residual ``y - x b``, not the second-stage residual.
+    """
+    n, k = X.shape
+    xtx = X.T @ X
+    try:
+        xtx_inv = np.linalg.inv(xtx)
+    except np.linalg.LinAlgError:
+        xtx_inv = np.linalg.pinv(xtx)
+    meat = (X * (resid ** 2)[:, None]).T @ X
+    scale = n / max(n - k, 1)
+    cov = scale * (xtx_inv @ meat @ xtx_inv)
+    cov = np.real(cov)
+    return 0.5 * (cov + cov.T)
+
+
+def _robust_wald_f(coef: np.ndarray, cov: np.ndarray, cols: np.ndarray) -> float:
+    """Heteroskedasticity-robust Wald statistic divided by the number of restrictions."""
+    diff = np.asarray(coef, dtype=float).ravel()[cols]
+    q = int(diff.size)
+    middle = cov[np.ix_(cols, cols)]
+    try:
+        solved = np.linalg.solve(middle, diff)
+    except np.linalg.LinAlgError:
+        solved, _, rank, _ = np.linalg.lstsq(middle, diff, rcond=None)
+        gap = middle @ solved - diff
+        if rank < q and np.linalg.norm(gap) > 1e-8 * max(1.0, np.linalg.norm(diff)):
+            if np.linalg.norm(diff) <= 1e-12:
+                return 0.0
+            return float("inf")
+    wald = float(diff @ solved)
+    if not np.isfinite(wald):
+        return float("inf")
+    if wald < 0.0:
+        wald = 0.0
+    return wald / q
+
+
+@dataclass
+class InstrumentalVariablesResult:
+    """Two-stage least squares fit of an outcome on an endogenous treatment.
+
+    Attributes
+    ----------
+    estimate : float
+        Coefficient on the endogenous treatment. With a binary instrument,
+        a binary treatment, independence, exclusion and monotonicity this
+        is a local average treatment effect for compliers. Under one-sided
+        noncompliance every treated unit is a complier, so that LATE is
+        also the average treatment effect on the treated.
+    se : float
+        Heteroskedasticity-robust (HC1) standard error of ``estimate``.
+        The meat uses the structural residual, so the second-stage fit is
+        not treated as if the fitted treatment were observed.
+    se_type : {"hc1"}
+        Variance estimator. Always ``"hc1"``.
+    first_stage_f : float
+        Heteroskedasticity-robust Wald statistic on the excluded
+        instruments in the first stage, divided by the number of excluded
+        instruments. Comparable to the Stock–Yogo rule of thumb; a small
+        value means the instrument is weak and the normal approximation
+        for ``se`` is not reliable.
+    first_stage_coef : ndarray of shape (n_instruments,)
+        First-stage coefficients on the excluded instruments.
+    n : int
+        Number of observations.
+    n_instruments : int
+        Number of excluded instruments.
+    n_covariates : int
+        Number of exogenous covariates included in both stages. The
+        intercept is not counted.
+    """
+
+    estimate: float
+    se: float
+    se_type: str
+    first_stage_f: float
+    first_stage_coef: np.ndarray
+    n: int
+    n_instruments: int
+    n_covariates: int
+
+
+def two_stage_least_squares(
+    instrument,
+    treatment,
+    outcome,
+    covariates=None,
+) -> InstrumentalVariablesResult:
+    """Two-stage least squares estimator of an instrumental-variables effect.
+
+    The treatment may be correlated with the outcome error. Excluded
+    instruments shift treatment and, under the usual IV conditions, do
+    not otherwise shift the outcome. Optional covariates are treated as
+    exogenous and enter both stages. An intercept is always included.
+
+    Write ``x`` for the structural regressors (intercept, covariates,
+    treatment) and ``w`` for the instruments (intercept, covariates,
+    excluded instruments). The estimator is
+
+    ``b = (x_hat' x_hat)^{-1} x_hat' y``, where ``x_hat`` is the projection
+    of ``x`` onto ``w``.
+
+    The returned standard error is the HC1 sandwich around that point,
+    with residual ``y - x b``. The first-stage F is the HC1 Wald test
+    that the excluded-instrument coefficients are jointly zero, divided
+    by the number of excluded instruments (the Kleibergen–Paap rk Wald F
+    in the one-endogenous-regressor case).
+
+    With a single binary instrument, binary treatment and no covariates
+    the point estimate equals the Wald ratio
+
+    ``(E[Y|Z=1] - E[Y|Z=0]) / (E[D|Z=1] - E[D|Z=0])``.
+
+    That ratio is a complier LATE when the instrument is independent of
+    the potential outcomes and potential treatments, affects the outcome
+    only through treatment, and shifts treatment in one direction.
+    One-sided noncompliance (nobody takes treatment without the
+    instrument) makes the LATE equal the ATT.
+
+    Parameters
+    ----------
+    instrument : array-like of shape (n,) or (n, n_instruments)
+        Excluded instruments.
+    treatment : array-like of shape (n,)
+        Endogenous treatment. Binary or continuous.
+    outcome : array-like of shape (n,)
+    covariates : array-like of shape (n,) or (n, n_covariates), optional
+        Exogenous controls included in both stages.
+
+    Returns
+    -------
+    InstrumentalVariablesResult
+    """
+    instrument = _coerce_block(instrument, "instrument")
+    n = instrument.shape[0]
+    treatment = np.asarray(treatment, dtype=float).ravel()
+    outcome = np.asarray(outcome, dtype=float).ravel()
+    if treatment.shape[0] != n or outcome.shape[0] != n:
+        raise ValueError("instrument, treatment and outcome must have the same length")
+    if not np.all(np.isfinite(treatment)):
+        raise ValueError("treatment must be finite")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+    if float(np.std(treatment)) == 0.0:
+        raise ValueError("treatment must have variation")
+
+    if covariates is None:
+        controls = np.empty((n, 0))
+    else:
+        controls = np.asarray(covariates, dtype=float)
+        if controls.ndim == 1:
+            controls = controls.reshape(-1, 1)
+        if controls.ndim != 2:
+            raise ValueError("covariates must be a 1d or 2d array")
+        if controls.shape[0] != n:
+            raise ValueError("covariates must have one row per observation")
+        if controls.shape[1] > 0 and not np.all(np.isfinite(controls)):
+            raise ValueError("covariates must be finite")
+        if controls.shape[1] == 0:
+            controls = np.empty((n, 0))
+
+    n_instruments = int(instrument.shape[1])
+    n_covariates = int(controls.shape[1])
+    ones = np.ones(n)
+    if n_covariates:
+        structural = np.column_stack([ones, controls, treatment])
+        instruments = np.column_stack([ones, controls, instrument])
+    else:
+        structural = np.column_stack([ones, treatment])
+        instruments = np.column_stack([ones, instrument])
+
+    if n <= instruments.shape[1]:
+        raise ValueError("not enough observations for the instruments and covariates")
+    if not _is_full_column_rank(instruments):
+        raise ValueError(
+            "instrument matrix is rank deficient; instruments must vary and "
+            "not be collinear with the covariates"
+        )
+
+    projection = np.linalg.lstsq(instruments, structural, rcond=None)[0]
+    fitted = instruments @ projection
+    treatment_hat = fitted[:, -1]
+    others = fitted[:, :-1]
+    explained = others @ np.linalg.lstsq(others, treatment_hat, rcond=None)[0]
+    partial_ss = float(np.dot(treatment_hat - explained, treatment_hat - explained))
+    if partial_ss <= 1e-10 * max(1.0, float(np.dot(treatment_hat, treatment_hat))):
+        raise ValueError("treatment is not identified by the excluded instruments")
+
+    gram = fitted.T @ fitted
+    try:
+        beta = np.linalg.solve(gram, fitted.T @ outcome)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("treatment is not identified by the excluded instruments") from exc
+    structural_resid = outcome - structural @ beta
+    cov = _hc1_covariance(fitted, structural_resid)
+    variance = float(cov[-1, -1])
+    if not np.isfinite(variance) or variance < 0.0:
+        variance = 0.0
+
+    first_coef, *_ = np.linalg.lstsq(instruments, treatment, rcond=None)
+    first_resid = treatment - instruments @ first_coef
+    first_cov = _hc1_covariance(instruments, first_resid)
+    instrument_cols = np.arange(instruments.shape[1] - n_instruments, instruments.shape[1])
+    first_stage_f = _robust_wald_f(first_coef, first_cov, instrument_cols)
+
+    return InstrumentalVariablesResult(
+        estimate=float(beta[-1]),
+        se=float(np.sqrt(variance)),
+        se_type="hc1",
+        first_stage_f=float(first_stage_f),
+        first_stage_coef=np.asarray(first_coef[instrument_cols], dtype=float).ravel(),
+        n=int(n),
+        n_instruments=n_instruments,
+        n_covariates=n_covariates,
     )

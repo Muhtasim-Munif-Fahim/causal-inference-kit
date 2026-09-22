@@ -4,17 +4,17 @@ A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
 IPW / matching / AIPW / difference-in-differences / synthetic-control /
-regression-discontinuity estimators, bootstrap evaluation against the
-ground truth, and markdown report rendering. Only `numpy` and `pandas`
-are required.
+regression-discontinuity / two-stage least squares estimators, bootstrap
+evaluation against the ground truth, and markdown report rendering. Only
+`numpy` and `pandas` are required.
 
 ## Contents
 
 | Module | Purpose |
 | --- | --- |
-| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD |
+| `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), Abadie synthetic control, sharp local-linear regression discontinuity |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -33,6 +33,7 @@ are required.
 | Difference-in-differences | ATT (DiD) | Two-period 2x2 or multi-period TWFE; clustered-by-unit or HC1 robust SE |
 | Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
 | Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
+| Two-stage least squares | LATE / ATT | IV coefficient on an endogenous treatment; HC1 robust SE and robust first-stage F |
 
 ## Installation
 
@@ -90,8 +91,9 @@ python examples/run_demo.py
 ```
 
 simulates a confounded sample, runs every estimator, evaluates them with a
-bootstrap, runs a DiD / TWFE panel, a synthetic-control donor panel and a sharp
-RD sample, and writes `examples/output/demo_report.md`.
+bootstrap, runs a DiD / TWFE panel, a synthetic-control donor panel, a sharp
+RD sample and an instrumental-variables encouragement design, and writes
+`examples/output/demo_report.md`.
 
 ### Difference-in-differences (Python)
 
@@ -155,6 +157,27 @@ each side of the threshold, with triangular-kernel weights by default. The
 estimate is the intercept jump at the cutoff. Omit `bandwidth` to use the
 Imbens–Kalyanaraman (2012) selector, or pass a positive window half-width.
 
+### Instrumental variables (Python)
+
+```python
+from causal_inference import simulate_iv_data, two_stage_least_squares
+
+instrument, treatment, outcome, covariates, true_late = simulate_iv_data(
+    n=4000, late=2.0, compliance=0.5, confounding=1.5, seed=7
+)
+result = two_stage_least_squares(instrument, treatment, outcome)
+print(result.estimate, true_late, result.se, result.first_stage_f)
+```
+
+The instrument is a randomized encouragement. Treatment is taken only by
+compliers, and only when they are encouraged, so the 2SLS coefficient is
+the complier LATE and, because there are no always-takers, the ATT.
+`result.se` is a heteroskedasticity-robust (HC1) standard error that uses
+the structural residual. `result.first_stage_f` is the robust Wald F on
+the excluded instruments. Pass exogenous controls with `covariates=`;
+they enter both stages. A continuous or over-identified instrument is
+accepted as a 1d or 2d array.
+
 ## Identifiability caveats
 
 Every estimator in this toolkit recovers a causal effect only under
@@ -189,6 +212,14 @@ assumptions that are not testable from the data alone:
   continuous there, and treatment must switch deterministically. The
   estimate is local to the threshold, not an ATE for the whole sample.
   Bandwidth choice trades bias against variance.
+- **Instrumental variables (2SLS):** the instrument must be relevant
+  (a small first-stage F signals a weak instrument), must affect the
+  outcome only through treatment (exclusion), and must be as good as
+  randomly assigned given the covariates (independence). With a binary
+  instrument the estimate is a complier LATE. One-sided noncompliance
+  makes that LATE equal the ATT. The reported standard error is
+  heteroskedasticity-robust (HC1); weak instruments invalidate the
+  usual normal approximation.
 
 ## Tests
 

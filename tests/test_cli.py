@@ -109,6 +109,7 @@ def test_demo_writes_report(tmp_path):
     assert "## Difference-in-differences" in text
     assert "## Synthetic control" in text
     assert "## Regression discontinuity" in text
+    assert "## Instrumental variables" in text
 
 
 def test_demo_prints_estimates(capsys, tmp_path):
@@ -123,3 +124,4 @@ def test_demo_prints_estimates(capsys, tmp_path):
     assert "two-way fixed effects" in captured.out
     assert "synthetic control" in captured.out
     assert "regression discontinuity" in captured.out
+    assert "two-stage least squares" in captured.out

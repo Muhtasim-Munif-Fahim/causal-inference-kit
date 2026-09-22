@@ -15,9 +15,11 @@ from causal_inference.estimators import (
     propensity_matching,
     regression_discontinuity,
     synthetic_control,
+    two_stage_least_squares,
 )
 from causal_inference.generators import (
     simulate_did_data,
+    simulate_iv_data,
     simulate_observational_data,
     simulate_rd_data,
     simulate_synthetic_control_data,
@@ -877,3 +879,246 @@ def test_rd_rectangular_alias_is_uniform():
     )
     assert result.kernel == "uniform"
     assert result.estimate == pytest.approx(2.0)
+
+
+def test_2sls_matches_wald_estimator():
+    instrument = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=float)
+    treatment = np.array([0, 0, 1, 0, 1, 1, 0, 1], dtype=float)
+    outcome = np.array([0, 1, 3, 2, 4, 5, 1, 6], dtype=float)
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    reduced_form = outcome[instrument == 1].mean() - outcome[instrument == 0].mean()
+    first_stage = treatment[instrument == 1].mean() - treatment[instrument == 0].mean()
+    assert result.estimate == pytest.approx(reduced_form / first_stage)
+    assert result.first_stage_coef.shape == (1,)
+    assert result.first_stage_coef[0] == pytest.approx(first_stage)
+    assert result.se_type == "hc1"
+    assert result.n == 8
+    assert result.n_instruments == 1
+    assert result.n_covariates == 0
+    assert result.se > 0
+    assert result.first_stage_f == pytest.approx(
+        (result.first_stage_coef[0] / _first_stage_hc1_se(instrument, treatment)) ** 2
+    )
+
+
+def _first_stage_hc1_se(instrument, treatment):
+    """HC1 standard error of the slope in a treatment-on-instrument regression."""
+    z = np.asarray(instrument, dtype=float).ravel()
+    d = np.asarray(treatment, dtype=float).ravel()
+    n = z.size
+    design = np.column_stack([np.ones(n), z])
+    coef = np.linalg.lstsq(design, d, rcond=None)[0]
+    resid = d - design @ coef
+    xtx_inv = np.linalg.inv(design.T @ design)
+    meat = (design * (resid ** 2)[:, None]).T @ design
+    scale = n / (n - design.shape[1])
+    variance = scale * (xtx_inv @ meat @ xtx_inv)[1, 1]
+    return float(np.sqrt(variance))
+
+
+def test_2sls_robust_se_matches_sandwich():
+    rng = np.random.default_rng(0)
+    n = 50
+    instrument = rng.normal(size=(n, 1))
+    covariates = rng.normal(size=(n, 2))
+    treatment = 0.8 * instrument[:, 0] + 0.3 * covariates[:, 0] + rng.normal(size=n)
+    outcome = 1.5 * treatment - 0.4 * covariates[:, 1] + rng.normal(size=n)
+    result = two_stage_least_squares(
+        instrument, treatment, outcome, covariates=covariates
+    )
+
+    ones = np.ones(n)
+    instruments = np.column_stack([ones, covariates, instrument])
+    structural = np.column_stack([ones, covariates, treatment])
+    fitted = instruments @ np.linalg.lstsq(instruments, structural, rcond=None)[0]
+    beta = np.linalg.solve(fitted.T @ fitted, fitted.T @ outcome)
+    resid = outcome - structural @ beta
+    k = structural.shape[1]
+    bread = np.linalg.inv(fitted.T @ fitted)
+    meat = (fitted * (resid ** 2)[:, None]).T @ fitted
+    variance = (n / (n - k)) * (bread @ meat @ bread)[-1, -1]
+    assert result.estimate == pytest.approx(beta[-1])
+    assert result.se == pytest.approx(np.sqrt(variance))
+    assert result.n_covariates == 2
+    assert result.n_instruments == 1
+
+
+def test_2sls_recovers_late_on_encouragement_dgp():
+    instrument, treatment, outcome, _, true_late = simulate_iv_data(
+        n=8000, late=2.0, compliance=0.5, confounding=1.5, noise=0.5, seed=11
+    )
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    naive = difference_in_means(treatment, outcome)
+    assert result.estimate == pytest.approx(true_late, abs=0.25)
+    assert abs(naive - true_late) > 1.0
+    assert result.first_stage_f > 10
+
+
+def test_2sls_zero_effect_under_confounding():
+    instrument, treatment, outcome, _, true_late = simulate_iv_data(
+        n=8000, late=0.0, compliance=0.5, confounding=2.0, noise=0.5, seed=13
+    )
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert true_late == pytest.approx(0.0)
+    assert result.estimate == pytest.approx(0.0, abs=0.25)
+    assert abs(difference_in_means(treatment, outcome)) > 0.5
+
+
+def test_2sls_negative_effect():
+    instrument, treatment, outcome, _, true_late = simulate_iv_data(
+        n=8000, late=-1.5, compliance=0.6, confounding=1.0, noise=0.4, seed=17
+    )
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.estimate == pytest.approx(true_late, abs=0.25)
+
+
+def test_2sls_noise_free_recovers_exact_effect():
+    instrument, treatment, outcome, _, true_late = simulate_iv_data(
+        n=500, late=3.0, compliance=0.5, confounding=0.0, noise=0.0, seed=19
+    )
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.estimate == pytest.approx(true_late)
+
+
+def test_2sls_with_covariates_recovers_exact_effect():
+    instrument, treatment, outcome, covariates, true_late = simulate_iv_data(
+        n=600,
+        late=2.5,
+        compliance=0.4,
+        confounding=0.0,
+        noise=0.0,
+        n_covariates=2,
+        covariate_effect=1.5,
+        seed=23,
+    )
+    result = two_stage_least_squares(
+        instrument, treatment, outcome, covariates=covariates
+    )
+    assert result.estimate == pytest.approx(true_late, abs=1e-8)
+    assert result.n_covariates == 2
+    assert result.se == pytest.approx(0.0, abs=1e-8)
+
+
+def test_2sls_one_covariate_column():
+    instrument, treatment, outcome, covariates, true_late = simulate_iv_data(
+        n=400, late=1.0, confounding=0.0, noise=0.0, n_covariates=1, seed=29
+    )
+    result = two_stage_least_squares(
+        instrument, treatment, outcome, covariates=covariates[:, 0]
+    )
+    assert result.estimate == pytest.approx(true_late, abs=1e-8)
+    assert result.n_covariates == 1
+
+
+def test_2sls_overidentified_recovers_effect():
+    rng = np.random.default_rng(1)
+    n = 8000
+    instrument = rng.normal(size=(n, 2))
+    confounder = rng.normal(size=n)
+    treatment = 1.5 * instrument[:, 0] + 0.8 * instrument[:, 1] + confounder
+    outcome = 2.0 * treatment + 0.7 * confounder + 0.3 * rng.normal(size=n)
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.n_instruments == 2
+    assert result.estimate == pytest.approx(2.0, abs=0.15)
+    assert result.first_stage_f > 10
+    assert result.se > 0
+    naive = np.linalg.lstsq(
+        np.column_stack([np.ones(n), treatment]), outcome, rcond=None
+    )[0][1]
+    assert abs(naive - 2.0) > abs(result.estimate - 2.0)
+
+
+def test_2sls_weak_instrument_has_small_first_stage_f():
+    rng = np.random.default_rng(2)
+    n = 2000
+    instrument = rng.normal(size=n)
+    treatment = 0.01 * instrument + rng.normal(size=n)
+    outcome = treatment + rng.normal(size=n)
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.first_stage_f < 5
+
+
+def test_2sls_strong_instrument_has_large_first_stage_f():
+    rng = np.random.default_rng(3)
+    n = 2000
+    instrument = rng.normal(size=n)
+    treatment = 1.5 * instrument + rng.normal(size=n)
+    outcome = 2.0 * treatment + rng.normal(size=n)
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.first_stage_f > 30
+    assert result.estimate == pytest.approx(2.0, abs=0.15)
+
+
+def test_2sls_empty_covariates_match_omitted_covariates():
+    instrument, treatment, outcome, covariates, _ = simulate_iv_data(
+        n=300, late=1.0, noise=0.2, seed=31
+    )
+    without = two_stage_least_squares(instrument, treatment, outcome)
+    empty = two_stage_least_squares(
+        instrument, treatment, outcome, covariates=covariates
+    )
+    assert empty.estimate == pytest.approx(without.estimate)
+    assert empty.se == pytest.approx(without.se)
+    assert empty.n_covariates == 0
+
+
+def test_2sls_rejects_length_mismatch():
+    with pytest.raises(ValueError):
+        two_stage_least_squares(np.zeros(3), np.zeros(4), np.zeros(3))
+    with pytest.raises(ValueError):
+        two_stage_least_squares(np.zeros(3), np.zeros(3), np.zeros(4))
+    with pytest.raises(ValueError):
+        two_stage_least_squares(
+            np.zeros(4), np.zeros(4), np.zeros(4), covariates=np.zeros(3)
+        )
+
+
+def test_2sls_rejects_nonfinite_values():
+    instrument = np.array([0.0, 1.0, 0.0, 1.0])
+    treatment = np.array([0.0, 1.0, 0.0, 1.0])
+    outcome = np.array([0.0, 1.0, 2.0, 3.0])
+    with pytest.raises(ValueError):
+        two_stage_least_squares(np.array([0.0, np.nan, 0.0, 1.0]), treatment, outcome)
+    with pytest.raises(ValueError):
+        two_stage_least_squares(instrument, np.array([0.0, np.inf, 0.0, 1.0]), outcome)
+    with pytest.raises(ValueError):
+        two_stage_least_squares(instrument, treatment, np.array([0.0, 1.0, np.nan, 3.0]))
+
+
+def test_2sls_rejects_constant_instrument():
+    treatment = np.array([0.0, 1.0, 0.0, 1.0])
+    outcome = np.arange(4.0)
+    with pytest.raises(ValueError):
+        two_stage_least_squares(np.ones(4), treatment, outcome)
+
+
+def test_2sls_rejects_constant_treatment():
+    instrument = np.array([0.0, 1.0, 0.0, 1.0])
+    outcome = np.arange(4.0)
+    with pytest.raises(ValueError):
+        two_stage_least_squares(instrument, np.zeros(4), outcome)
+
+
+def test_2sls_rejects_instrument_collinear_with_covariates():
+    rng = np.random.default_rng(4)
+    n = 40
+    instrument = rng.normal(size=n)
+    treatment = instrument + rng.normal(size=n)
+    outcome = treatment + rng.normal(size=n)
+    with pytest.raises(ValueError):
+        two_stage_least_squares(instrument, treatment, outcome, covariates=instrument)
+
+
+def test_2sls_rejects_too_few_observations():
+    with pytest.raises(ValueError):
+        two_stage_least_squares(np.array([0.0, 1.0]), np.array([0.0, 1.0]), np.array([0.0, 1.0]))
+
+
+def test_2sls_full_compliance_matches_difference_in_means():
+    instrument, treatment, outcome, _, true_late = simulate_iv_data(
+        n=2000, late=2.0, compliance=1.0, confounding=1.5, noise=0.5, seed=37
+    )
+    np.testing.assert_array_equal(treatment, instrument)
+    result = two_stage_least_squares(instrument, treatment, outcome)
+    assert result.estimate == pytest.approx(difference_in_means(treatment, outcome))
+    assert result.estimate == pytest.approx(true_late, abs=0.2)
