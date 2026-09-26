@@ -3,7 +3,7 @@
 A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
-IPW / matching / AIPW / difference-in-differences / synthetic-control /
+IPW / matching / AIPW / difference-in-differences / event-study DiD / synthetic-control /
 regression-discontinuity / two-stage least squares estimators, bootstrap
 evaluation against the ground truth, and markdown report rendering. Only
 `numpy` and `pandas` are required.
@@ -14,7 +14,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F) |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -31,9 +31,42 @@ evaluation against the ground truth, and markdown report rendering. Only
 | Propensity matching | ATT | Greedy nearest-neighbor in logit space, with/without replacement, optional caliper |
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
 | Difference-in-differences | ATT (DiD) | Two-period 2x2 or multi-period TWFE; clustered-by-unit or HC1 robust SE |
+| Event-study DiD | Dynamic ATT | Relative-time coefficients around adoption; unit and time FE; omit `k=-1` by default |
 | Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
 | Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
 | Two-stage least squares | LATE / ATT | IV coefficient on an endogenous treatment; HC1 robust SE and robust first-stage F |
+
+
+## Event-study / dynamic DiD
+
+`event_study_did` estimates relative-time coefficients around a common
+adoption date `T0`:
+
+```text
+Y_it = a_i + b_t + sum_{k != ref} tau_k * 1{G_i=1, t - T0 = k} + e_it
+```
+
+The coefficient at `reference` (default `-1`, the last pre-period) is
+normalized to zero. Under parallel trends the leads are zero in expectation
+and the lags are dynamic ATTs. This sits alongside `difference_in_differences`,
+which reports a single 2x2 or TWFE ATT.
+
+```python
+from causal_inference import event_study_did, simulate_did_data
+
+unit, group, period, outcome, true_att = simulate_did_data(
+    n=800, ate=2.0, n_pre=3, n_post=3, seed=3
+)
+result = event_study_did(
+    unit, group, period, outcome, treatment_time=3, reference=-1
+)
+for k, coef, se in zip(result.relative_times, result.coefficients, result.ses):
+    print(f"k={k:+d}: {coef:.3f} (se {se:.3f})")
+```
+
+```bash
+python -m causal_inference.cli event-study --n 500 --n-pre 3 --n-post 3 --ate 1.5
+```
 
 ## Installation
 

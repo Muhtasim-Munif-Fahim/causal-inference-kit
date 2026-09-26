@@ -3,11 +3,13 @@
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
     DifferenceInDifferencesResult,
+    EventStudyResult,
     InstrumentalVariablesResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
     difference_in_differences,
+    event_study_did,
     difference_in_means,
     ipw_ate,
     ipw_att,
@@ -40,6 +42,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "DifferenceInDifferencesResult",
+    "EventStudyResult",
     "EvaluationResult",
     "InstrumentalVariablesResult",
     "LogisticFit",
@@ -48,6 +51,7 @@ __all__ = [
     "SyntheticControlResult",
     "aipw_ate",
     "difference_in_differences",
+    "event_study_did",
     "difference_in_means",
     "evaluate",
     "ipw_ate",

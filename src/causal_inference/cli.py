@@ -12,13 +12,14 @@ from .estimators import (
     aipw_ate,
     difference_in_means,
     difference_in_differences,
+    event_study_did,
     ipw_ate,
     ipw_att,
     ipw_weights,
     propensity_matching,
 )
 from .evaluate import evaluate, standard_estimators
-from .generators import simulate_observational_data
+from .generators import simulate_did_data, simulate_observational_data
 from .propensity import propensity_scores
 from .report import render_report
 
@@ -117,6 +118,40 @@ def _add_common_data_args(parser) -> None:
     parser.add_argument("--data", default="data.csv", help="path to the dataset CSV")
 
 
+
+def _cmd_event_study(args) -> int:
+    unit, group, period, outcome, true_did = simulate_did_data(
+        n=args.n,
+        ate=args.ate,
+        time_trend=args.time_trend,
+        n_pre=args.n_pre,
+        n_post=args.n_post,
+        seed=args.seed,
+    )
+    treatment_time = float(args.n_pre)
+    result = event_study_did(
+        unit,
+        group,
+        period,
+        outcome,
+        treatment_time=treatment_time,
+        reference=args.reference,
+        cluster=not args.hc1,
+    )
+    print(
+        f"event-study DiD  n={result.n} units={result.n_units} "
+        f"times={result.n_times} T0={result.treatment_time:g} "
+        f"reference={result.reference} se={result.se_type}"
+    )
+    print(f"true ATT (flat): {true_did:.4f}")
+    print(f"{'k':>6}{'estimate':>12}{'se':>12}")
+    for k, coef, se in zip(result.relative_times, result.coefficients, result.ses):
+        print(f"{int(k):>6}{float(coef):>12.4f}{float(se):>12.4f}")
+    print(f"{result.reference:>6}{0.0:>12.4f}{'(ref)':>12}")
+    return 0
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -151,6 +186,24 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     report.add_argument("--out", default="report.md", help="output markdown path")
     report.set_defaults(func=_cmd_report)
+
+    event = subparsers.add_parser(
+        "event-study",
+        help="fit an event-study / dynamic DiD on a synthetic panel",
+    )
+    event.add_argument("--n", type=int, default=500, help="number of units")
+    event.add_argument("--n-pre", type=int, default=3, help="pre-treatment periods")
+    event.add_argument("--n-post", type=int, default=3, help="post-treatment periods")
+    event.add_argument("--ate", type=float, default=1.5, help="true flat ATT")
+    event.add_argument("--time-trend", type=float, default=1.0, help="common linear time effect")
+    event.add_argument("--reference", type=int, default=-1, help="omitted relative-time period")
+    event.add_argument("--seed", type=int, default=0, help="simulation seed")
+    event.add_argument(
+        "--hc1",
+        action="store_true",
+        help="use HC1 robust SE instead of clustering by unit",
+    )
+    event.set_defaults(func=_cmd_event_study)
 
     return parser
 

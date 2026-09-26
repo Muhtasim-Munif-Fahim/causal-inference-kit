@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, synthetic control, RD, 2SLS."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS."""
 
 from __future__ import annotations
 
@@ -831,6 +831,209 @@ def difference_in_differences(
         control_mean_pre=None if cell is None else cell["control_mean_pre"],
         control_mean_post=None if cell is None else cell["control_mean_post"],
     )
+
+
+@dataclass
+class EventStudyResult:
+    """Event-study / dynamic difference-in-differences fit.
+
+    Attributes
+    ----------
+    relative_times : ndarray of shape (K,)
+        Relative-time indices ``k = period - treatment_time`` for which a
+        coefficient was estimated (the reference period is omitted).
+    coefficients : ndarray of shape (K,)
+        Estimated dynamic ATT at each relative time.
+    ses : ndarray of shape (K,)
+        Clustered or HC1 standard errors aligned with ``coefficients``.
+    reference : int
+        Omitted relative-time period (default ``-1``, the last pre-period).
+    se_type : {"cluster", "hc1"}
+        Variance estimator.
+    n : int
+        Number of observations.
+    n_units : int
+        Number of distinct units.
+    n_times : int
+        Number of distinct calendar periods.
+    treatment_time : float
+        First post-treatment calendar period used to form relative time.
+    """
+
+    relative_times: object
+    coefficients: object
+    ses: object
+    reference: int
+    se_type: str
+    n: int
+    n_units: int
+    n_times: int
+    treatment_time: float
+
+    def as_dict(self) -> dict:
+        return {
+            int(k): {"estimate": float(c), "se": float(s)}
+            for k, c, s in zip(self.relative_times, self.coefficients, self.ses)
+        }
+
+
+def event_study_did(
+    unit,
+    group,
+    period,
+    outcome,
+    treatment_time=None,
+    reference: int = -1,
+    cluster: bool = True,
+) -> EventStudyResult:
+    """Event-study (dynamic) difference-in-differences.
+
+    Fits the relative-time regression
+
+    ``Y_it = a_i + b_t + sum_{k != reference} tau_k * 1{G_i = 1, t - T0 = k} + e_it``
+
+    with unit and calendar-time fixed effects. ``T0`` is ``treatment_time``
+    (the first post-treatment period). Relative time ``k = period - T0`` is
+    ``-n_pre, ..., -1`` before adoption and ``0, 1, ...`` afterwards.
+    The coefficient at ``reference`` (default ``-1``) is normalized to zero.
+    Under parallel trends the pre-treatment ``tau_k`` are zero in expectation
+    and the post-treatment ``tau_k`` are dynamic ATTs.
+
+    This sits alongside :func:`difference_in_differences`, which reports a
+    single two-period or TWFE ATT. Use the event study when the path of
+    effects around adoption matters.
+
+    Parameters
+    ----------
+    unit, group, period, outcome : array-like of shape (n,)
+        Panel identifiers, ever-treated indicator, calendar time, and
+        outcome. ``group`` must be constant within ``unit``.
+    treatment_time : optional
+        First post-treatment calendar period. When omitted, defaults to the
+        second distinct period in a two-period panel, or raises when there
+        are more than two periods.
+    reference : int
+        Relative-time period whose coefficient is omitted (normalized to
+        zero). Default ``-1``.
+    cluster : bool
+        If true (default), cluster the SE by ``unit``; otherwise use HC1.
+
+    Returns
+    -------
+    EventStudyResult
+    """
+    group = _validate_treatment(group)
+    unit = np.asarray(unit).ravel()
+    period = np.asarray(period).ravel()
+    outcome = np.asarray(outcome, dtype=float).ravel()
+    if not (unit.shape[0] == group.shape[0] == period.shape[0] == outcome.shape[0]):
+        raise ValueError("unit, group, period and outcome must have the same length")
+    if unit.shape[0] == 0:
+        raise ValueError("at least one observation is required")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+    if isinstance(reference, bool) or not isinstance(reference, (int, np.integer)):
+        raise ValueError("reference must be an integer")
+    reference = int(reference)
+
+    times = np.unique(period)
+    n_times = int(times.size)
+    if n_times < 2:
+        raise ValueError("at least two time periods are required")
+    if treatment_time is None:
+        if n_times == 2:
+            treatment_time = times[-1]
+        else:
+            raise ValueError(
+                "treatment_time is required for event-study DiD when there "
+                "are more than two distinct periods"
+            )
+    treatment_time = float(treatment_time)
+
+    unit_ids, unit_index = np.unique(unit, return_inverse=True)
+    n_units = int(unit_ids.size)
+    if n_units < 2:
+        raise ValueError("at least two units are required")
+    _group_constant_within_unit(np.asarray(group, dtype=float), unit_index, n_units)
+
+    rel = period.astype(float) - treatment_time
+    # Integer relative times (periods are assumed on a regular grid).
+    rel_int = np.rint(rel).astype(int)
+    if not np.allclose(rel, rel_int.astype(float)):
+        raise ValueError("period - treatment_time must be integer-valued")
+
+    treated = group == 1
+    if not treated.any() or not (~treated).any():
+        raise ValueError("both treatment groups must be present")
+
+    event_levels = np.array(sorted(set(int(v) for v in np.unique(rel_int[treated]))))
+    if reference not in event_levels and reference not in set(int(v) for v in np.unique(rel_int)):
+        # Still allow omitting a level that only controls could take; require it in treated path usually.
+        pass
+    if reference not in set(int(v) for v in event_levels):
+        raise ValueError(
+            f"reference relative time {reference} is not observed for treated units; "
+            f"observed levels are {event_levels.tolist()}"
+        )
+    estimable = event_levels[event_levels != reference]
+    if estimable.size == 0:
+        raise ValueError("need at least one non-reference relative-time period")
+
+    # Build event-time dummies for treated units only.
+    n = outcome.shape[0]
+    dummies = np.zeros((n, estimable.size), dtype=float)
+    for j, k in enumerate(estimable):
+        dummies[:, j] = ((rel_int == k) & treated).astype(float)
+
+    counts = np.bincount(unit_index, minlength=n_units).astype(float)
+    y = _demean_within(outcome, unit_index, n_units, counts)
+    _, time_index = np.unique(period, return_inverse=True)
+    time_dummies = np.eye(n_times, dtype=float)[time_index][:, 1:]
+    X_time = _demean_within(time_dummies, unit_index, n_units, counts)
+    X_event = _demean_within(dummies, unit_index, n_units, counts)
+    X = np.column_stack([X_time, X_event]) if X_time.size else X_event
+    if X.shape[1] == 0:
+        raise ValueError("design matrix is empty")
+
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    event_coef = coef[-estimable.size :]
+
+    # Coefficient-wise sandwich SE for the event-time block.
+    n_obs, k_cols = X.shape
+    xtx = X.T @ X
+    try:
+        xtx_inv = np.linalg.inv(xtx)
+    except np.linalg.LinAlgError:
+        xtx_inv = np.linalg.pinv(xtx)
+    if cluster:
+        scores = np.zeros((n_units, k_cols))
+        np.add.at(scores, unit_index, X * resid[:, None])
+        meat = scores.T @ scores
+        g = n_units
+        scale = (g / max(g - 1, 1)) * ((n_obs - 1) / max(n_obs - k_cols, 1))
+        se_type = "cluster"
+    else:
+        meat = (X * (resid ** 2)[:, None]).T @ X
+        scale = n_obs / max(n_obs - k_cols, 1)
+        se_type = "hc1"
+    cov = scale * (xtx_inv @ meat @ xtx_inv)
+    event_var = np.real(np.diag(cov)[-estimable.size :])
+    event_se = np.sqrt(np.maximum(event_var, 0.0))
+
+    return EventStudyResult(
+        relative_times=estimable.astype(int),
+        coefficients=np.asarray(event_coef, dtype=float),
+        ses=np.asarray(event_se, dtype=float),
+        reference=reference,
+        se_type=se_type,
+        n=int(n_obs),
+        n_units=n_units,
+        n_times=n_times,
+        treatment_time=treatment_time,
+    )
+
+
 
 
 @dataclass
