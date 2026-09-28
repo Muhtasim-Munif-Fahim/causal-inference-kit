@@ -13,13 +13,14 @@ from .estimators import (
     difference_in_means,
     difference_in_differences,
     event_study_did,
+    linear_mediation,
     ipw_ate,
     ipw_att,
     ipw_weights,
     propensity_matching,
 )
 from .evaluate import evaluate, standard_estimators
-from .generators import simulate_did_data, simulate_observational_data
+from .generators import simulate_did_data, simulate_mediation_data, simulate_observational_data
 from .propensity import propensity_scores
 from .report import render_report
 
@@ -152,6 +153,35 @@ def _cmd_event_study(args) -> int:
 
 
 
+
+def _cmd_mediation(args) -> int:
+    treatment, mediator, outcome, covariates, truth = simulate_mediation_data(
+        n=args.n,
+        direct_effect=args.direct,
+        a_path=args.a_path,
+        b_path=args.b_path,
+        confounding=args.confounding,
+        n_covariates=args.n_covariates,
+        seed=args.seed,
+    )
+    cov = covariates if args.n_covariates > 0 else None
+    result = linear_mediation(treatment, mediator, outcome, covariates=cov)
+    print(
+        f"linear mediation  n={result.n} covariates={result.n_covariates}"
+    )
+    print(f"{'effect':<12}{'estimate':>12}{'se':>12}{'truth':>12}")
+    rows = [
+        ("total", result.total_effect, result.se_total, truth["total"]),
+        ("direct", result.direct_effect, result.se_direct, truth["direct"]),
+        ("indirect", result.indirect_effect, result.se_indirect, truth["indirect"]),
+        ("a_path", result.a_path, result.se_a, truth["a_path"]),
+        ("b_path", result.b_path, result.se_b, truth["b_path"]),
+    ]
+    for name, est, se, true in rows:
+        print(f"{name:<12}{est:>12.4f}{se:>12.4f}{true:>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -204,6 +234,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="use HC1 robust SE instead of clustering by unit",
     )
     event.set_defaults(func=_cmd_event_study)
+
+    med = subparsers.add_parser(
+        "mediation",
+        help="fit linear product-of-coefficients mediation on a synthetic SEM",
+    )
+    med.add_argument("--n", type=int, default=2000, help="number of units")
+    med.add_argument("--direct", type=float, default=1.0, help="true controlled direct effect")
+    med.add_argument("--a-path", type=float, default=1.5, help="true treatment→mediator coefficient")
+    med.add_argument("--b-path", type=float, default=0.8, help="true mediator→outcome coefficient")
+    med.add_argument("--confounding", type=float, default=0.0, help="shared M/Y confounder strength")
+    med.add_argument("--n-covariates", type=int, default=0, help="exogenous covariate columns")
+    med.add_argument("--seed", type=int, default=0, help="simulation seed")
+    med.set_defaults(func=_cmd_mediation)
 
     return parser
 

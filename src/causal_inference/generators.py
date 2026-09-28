@@ -474,3 +474,107 @@ def simulate_iv_data(
     if n_covariates:
         outcome = outcome + covariate_effect * covariates.sum(axis=1)
     return instrument, treatment, outcome, covariates, float(late)
+
+
+def simulate_mediation_data(
+    n: int = 2000,
+    direct_effect: float = 1.0,
+    a_path: float = 1.5,
+    b_path: float = 0.8,
+    treatment_prob: float = 0.5,
+    confounding: float = 0.0,
+    noise_m: float = 1.0,
+    noise_y: float = 1.0,
+    n_covariates: int = 0,
+    covariate_effect: float = 0.5,
+    seed: int = 0,
+):
+    """Simulate a linear mediation DGP with known direct and indirect effects.
+
+    Treatment ``T`` is Bernoulli. The mediator and outcome follow
+
+    ``M = a * T + confounding * U + e_m``
+    ``Y = direct * T + b * M + confounding * U + e_y``
+
+    so the true total effect is ``direct + a * b`` and the true indirect
+    effect is ``a * b``. Optional covariates enter both equations linearly.
+    When ``confounding`` is zero the linear product-of-coefficients
+    estimator is consistent for these paths.
+
+    Parameters
+    ----------
+    n : int
+        Number of units. At least 3.
+    direct_effect : float
+        Controlled direct effect of treatment on the outcome.
+    a_path : float
+        Treatment → mediator coefficient.
+    b_path : float
+        Mediator → outcome coefficient.
+    treatment_prob : float
+        Share treated, in ``(0, 1)``.
+    confounding : float
+        Strength of a shared unobserved confounder ``U`` of ``M`` and ``Y``.
+        Zero recovers the no-confounder SEM that ``linear_mediation`` targets.
+    noise_m, noise_y : float
+        Idiosyncratic shock standard deviations for mediator and outcome.
+    n_covariates : int
+        Number of exogenous standard-normal covariates.
+    covariate_effect : float
+        Coefficient on each covariate in both equations.
+    seed : int
+
+    Returns
+    -------
+    treatment, mediator, outcome : ndarray of shape (n,)
+    covariates : ndarray of shape (n, n_covariates)
+    true_effects : dict
+        ``{"direct", "indirect", "total", "a_path", "b_path"}``.
+    """
+    if n < 3:
+        raise ValueError("n must be at least 3")
+    if not 0.0 < treatment_prob < 1.0:
+        raise ValueError("treatment_prob must lie strictly between 0 and 1")
+    if noise_m < 0 or noise_y < 0:
+        raise ValueError("noise_m and noise_y must be non-negative")
+    if n_covariates < 0:
+        raise ValueError("n_covariates must be non-negative")
+
+    rng = np.random.default_rng(seed)
+    n_treated = int(round(treatment_prob * n))
+    n_treated = min(max(n_treated, 1), n - 1)
+    treatment = np.zeros(n)
+    treatment[:n_treated] = 1.0
+    rng.shuffle(treatment)
+
+    u = rng.normal(size=n)
+    if n_covariates:
+        covariates = rng.normal(size=(n, n_covariates))
+        cov_term = covariate_effect * covariates.sum(axis=1)
+    else:
+        covariates = np.empty((n, 0))
+        cov_term = 0.0
+
+    mediator = (
+        a_path * treatment
+        + confounding * u
+        + cov_term
+        + noise_m * rng.normal(size=n)
+    )
+    outcome = (
+        direct_effect * treatment
+        + b_path * mediator
+        + confounding * u
+        + cov_term
+        + noise_y * rng.normal(size=n)
+    )
+    indirect = float(a_path * b_path)
+    true_effects = {
+        "direct": float(direct_effect),
+        "indirect": indirect,
+        "total": float(direct_effect) + indirect,
+        "a_path": float(a_path),
+        "b_path": float(b_path),
+    }
+    return treatment, mediator, outcome, covariates, true_effects
+

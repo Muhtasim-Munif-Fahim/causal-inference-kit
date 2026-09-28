@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation."""
 
 from __future__ import annotations
 
@@ -1842,3 +1842,180 @@ def two_stage_least_squares(
         n_instruments=n_instruments,
         n_covariates=n_covariates,
     )
+
+
+def _ols_fit(design: np.ndarray, y: np.ndarray):
+    """OLS coefficients and HC1 covariance for ``y ~ design`` (design includes intercept)."""
+    coef, *_ = np.linalg.lstsq(design, y, rcond=None)
+    resid = y - design @ coef
+    cov = _hc1_covariance(design, resid)
+    return coef, cov
+
+
+@dataclass
+class MediationResult:
+    """Linear product-of-coefficients mediation decomposition.
+
+    Attributes
+    ----------
+    total_effect : float
+        Coefficient of treatment in ``Y ~ T (+ covariates)``.
+    direct_effect : float
+        Coefficient of treatment in ``Y ~ T + M (+ covariates)`` (controlled
+        direct effect under the linear SEM).
+    indirect_effect : float
+        Product ``a * b`` where ``a`` is the treatment coefficient in
+        ``M ~ T (+ covariates)`` and ``b`` is the mediator coefficient in
+        ``Y ~ T + M (+ covariates)``.
+    a_path : float
+        Treatment → mediator coefficient.
+    b_path : float
+        Mediator → outcome coefficient (controlling for treatment).
+    se_total : float
+        HC1 standard error of ``total_effect``.
+    se_direct : float
+        HC1 standard error of ``direct_effect``.
+    se_indirect : float
+        Delta-method (Sobel) standard error of ``a * b`` using the HC1
+        variances of ``a`` and ``b`` (assuming independence of the two
+        stage residuals, the usual Sobel approximation).
+    se_a : float
+        HC1 standard error of ``a_path``.
+    se_b : float
+        HC1 standard error of ``b_path``.
+    n : int
+        Number of observations.
+    n_covariates : int
+        Number of optional covariates (intercept not counted).
+    """
+
+    total_effect: float
+    direct_effect: float
+    indirect_effect: float
+    a_path: float
+    b_path: float
+    se_total: float
+    se_direct: float
+    se_indirect: float
+    se_a: float
+    se_b: float
+    n: int
+    n_covariates: int
+
+
+def linear_mediation(
+    treatment,
+    mediator,
+    outcome,
+    covariates=None,
+) -> MediationResult:
+    """Decompose a treatment effect into direct and mediated paths.
+
+    Fits three linear regressions with an intercept (and optional
+    covariates in every equation):
+
+    * ``M ~ T`` → path ``a``
+    * ``Y ~ T + M`` → paths ``c'`` (direct) and ``b``
+    * ``Y ~ T`` → total effect ``c``
+
+    Under a linear structural equation model with no treatment–mediator
+    interaction the product ``a * b`` equals the natural indirect effect
+    and ``c = c' + a b``. Standard errors for ``a``, ``b``, ``c`` and
+    ``c'`` are HC1; the indirect-effect SE uses the Sobel / delta-method
+    formula ``sqrt(a^2 se_b^2 + b^2 se_a^2)``.
+
+    Parameters
+    ----------
+    treatment : array-like of shape (n,)
+        Binary or continuous treatment.
+    mediator : array-like of shape (n,)
+        Mediator on the path from treatment to outcome.
+    outcome : array-like of shape (n,)
+    covariates : array-like of shape (n,) or (n, n_covariates), optional
+        Exogenous controls included in every equation.
+
+    Returns
+    -------
+    MediationResult
+    """
+    treatment = np.asarray(treatment, dtype=float).ravel()
+    mediator = np.asarray(mediator, dtype=float).ravel()
+    outcome = np.asarray(outcome, dtype=float).ravel()
+    n = treatment.shape[0]
+    if mediator.shape[0] != n or outcome.shape[0] != n:
+        raise ValueError("treatment, mediator and outcome must have the same length")
+    if n < 3:
+        raise ValueError("at least three observations are required for mediation")
+    if not np.all(np.isfinite(treatment)):
+        raise ValueError("treatment must be finite")
+    if not np.all(np.isfinite(mediator)):
+        raise ValueError("mediator must be finite")
+    if not np.all(np.isfinite(outcome)):
+        raise ValueError("outcome must be finite")
+    if float(np.std(treatment)) == 0.0:
+        raise ValueError("treatment must have variation")
+    if float(np.std(mediator)) == 0.0:
+        raise ValueError("mediator must have variation")
+
+    if covariates is None:
+        controls = np.empty((n, 0))
+    else:
+        controls = np.asarray(covariates, dtype=float)
+        if controls.ndim == 1:
+            controls = controls.reshape(-1, 1)
+        if controls.ndim != 2:
+            raise ValueError("covariates must be a 1d or 2d array")
+        if controls.shape[0] != n:
+            raise ValueError("covariates must have one row per observation")
+        if controls.shape[1] > 0 and not np.all(np.isfinite(controls)):
+            raise ValueError("covariates must be finite")
+        if controls.shape[1] == 0:
+            controls = np.empty((n, 0))
+
+    n_covariates = int(controls.shape[1])
+    ones = np.ones(n)
+    if n_covariates:
+        design_a = np.column_stack([ones, controls, treatment])
+        design_total = np.column_stack([ones, controls, treatment])
+        design_outcome = np.column_stack([ones, controls, treatment, mediator])
+    else:
+        design_a = np.column_stack([ones, treatment])
+        design_total = np.column_stack([ones, treatment])
+        design_outcome = np.column_stack([ones, treatment, mediator])
+
+    if n <= design_outcome.shape[1]:
+        raise ValueError("not enough observations for the mediation regressions")
+    if not _is_full_column_rank(design_a):
+        raise ValueError("treatment/covariate design is rank deficient")
+    if not _is_full_column_rank(design_outcome):
+        raise ValueError("outcome design is rank deficient; mediator may be collinear with treatment/covariates")
+
+    coef_a, cov_a = _ols_fit(design_a, mediator)
+    coef_y, cov_y = _ols_fit(design_outcome, outcome)
+    coef_c, cov_c = _ols_fit(design_total, outcome)
+
+    a = float(coef_a[-1])
+    b = float(coef_y[-1])
+    direct = float(coef_y[-2])
+    total = float(coef_c[-1])
+    se_a = float(np.sqrt(max(cov_a[-1, -1], 0.0)))
+    se_b = float(np.sqrt(max(cov_y[-1, -1], 0.0)))
+    se_direct = float(np.sqrt(max(cov_y[-2, -2], 0.0)))
+    se_total = float(np.sqrt(max(cov_c[-1, -1], 0.0)))
+    se_indirect = float(np.sqrt(max(a * a * se_b * se_b + b * b * se_a * se_a, 0.0)))
+
+    return MediationResult(
+        total_effect=total,
+        direct_effect=direct,
+        indirect_effect=float(a * b),
+        a_path=a,
+        b_path=b,
+        se_total=se_total,
+        se_direct=se_direct,
+        se_indirect=se_indirect,
+        se_a=se_a,
+        se_b=se_b,
+        n=int(n),
+        n_covariates=n_covariates,
+    )
+
