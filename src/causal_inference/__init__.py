@@ -6,6 +6,7 @@ from .estimators import (
     EventStudyResult,
     InstrumentalVariablesResult,
     MediationResult,
+    TLearnerResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
@@ -21,6 +22,7 @@ from .estimators import (
     synthetic_control,
     two_stage_least_squares,
     linear_mediation,
+    t_learner,
 )
 from .generators import (
     simulate_did_data,
@@ -49,6 +51,7 @@ __all__ = [
     "EvaluationResult",
     "InstrumentalVariablesResult",
     "MediationResult",
+    "TLearnerResult",
     "LogisticFit",
     "PropensityHistogram",
     "RegressionDiscontinuityResult",
@@ -78,6 +81,7 @@ __all__ = [
     "standard_estimators",
     "standardized_mean_differences",
     "synthetic_control",
+    "t_learner",
     "two_stage_least_squares",
     "weighted_standardized_mean_differences",
 ]

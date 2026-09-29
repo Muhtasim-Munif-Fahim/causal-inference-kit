@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner."""
 
 from __future__ import annotations
 
@@ -2017,5 +2017,70 @@ def linear_mediation(
         se_b=se_b,
         n=int(n),
         n_covariates=n_covariates,
+    )
+
+
+@dataclass
+class TLearnerResult:
+    """T-learner conditional average treatment effect (CATE).
+
+    Attributes
+    ----------
+    mean_cate : float
+        Sample mean of the per-unit CATE predictions (an ATE estimate).
+    cate : ndarray of shape (n,)
+        Per-row CATE ``mu1(x_i) - mu0(x_i)``.
+    n : int
+        Number of observations.
+    n_treated : int
+        Number of treated units used to fit ``mu1``.
+    n_control : int
+        Number of control units used to fit ``mu0``.
+    """
+
+    mean_cate: float
+    cate: np.ndarray
+    n: int
+    n_treated: int
+    n_control: int
+
+
+def t_learner(X, treatment, outcome, W=None) -> TLearnerResult:
+    """T-learner CATE: separate outcome regressions on treated vs control.
+
+    Fits OLS models ``mu1(z) = E[Y | T=1, Z]`` and ``mu0(z) = E[Y | T=0, Z]``
+    via :func:`outcome_regression` (``Z = (X, W)`` when ``W`` is supplied),
+    then returns the per-unit CATE ``mu1(z_i) - mu0(z_i)`` and its sample
+    mean. This is the classic two-model meta-learner of Kunzel et al.
+    (PNAS, 2019); with linear base learners it recovers a linear CATE in
+    the covariates.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders / features for the outcome models.
+    treatment : array-like of shape (n,)
+        Binary treatment indicator.
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates stacked onto ``X``.
+
+    Returns
+    -------
+    TLearnerResult
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    mu1, mu0 = outcome_regression(X, treatment, outcome, W=W)
+    cate = np.asarray(mu1 - mu0, dtype=float).ravel()
+    return TLearnerResult(
+        mean_cate=float(np.mean(cate)),
+        cate=cate,
+        n=int(cate.shape[0]),
+        n_treated=int(treated.sum()),
+        n_control=int(control.sum()),
     )
 

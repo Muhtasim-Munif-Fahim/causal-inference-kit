@@ -4,7 +4,7 @@ A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
 IPW / matching / AIPW / difference-in-differences / event-study DiD / synthetic-control /
-regression-discontinuity / two-stage least squares / linear mediation estimators, bootstrap
+regression-discontinuity / two-stage least squares / linear mediation / T-learner CATE estimators, bootstrap
 evaluation against the ground truth, and markdown report rendering. Only
 `numpy` and `pandas` are required.
 
@@ -14,7 +14,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables; a linear mediation SEM |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE) |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner CATE (separate OLS outcome models) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -36,6 +36,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
 | Two-stage least squares | LATE / ATT | IV coefficient on an endogenous treatment; HC1 robust SE and robust first-stage F |
 | Linear mediation | total / direct / indirect | Product-of-coefficients SEM; HC1 path SEs and Sobel SE for `a*b` |
+| T-learner | mean CATE + per-row CATE | Separate OLS outcome models on treated vs control; CATE = μ₁(x) − μ₀(x) |
 
 
 ## Event-study / dynamic DiD
@@ -92,6 +93,27 @@ print(truth)
 
 ```bash
 python -m causal_inference.cli mediation --n 2000 --direct 1.0 --a-path 1.5 --b-path 0.8
+```
+
+
+## T-learner CATE
+
+`t_learner` fits separate OLS outcome regressions on the treated and control
+groups (via `outcome_regression`) and returns the per-unit CATE
+`μ₁(x) − μ₀(x)` together with its sample mean.
+
+```python
+from causal_inference import t_learner, simulate_observational_data
+
+X, W, treatment, outcome, true_ate = simulate_observational_data(
+    n=2000, ate=2.0, effect_heterogeneity=0.5, seed=0
+)
+result = t_learner(X, treatment, outcome, W=W)
+print(result.mean_cate, result.cate[:5])
+```
+
+```bash
+python -m causal_inference.cli t-learner --n 2000 --ate 2.0 --heterogeneity 0.5
 ```
 
 ## Installation
