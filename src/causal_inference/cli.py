@@ -15,6 +15,7 @@ from .estimators import (
     event_study_did,
     linear_mediation,
     t_learner,
+    s_learner,
     ipw_ate,
     ipw_att,
     ipw_weights,
@@ -212,6 +213,35 @@ def _cmd_t_learner(args) -> int:
     return 0
 
 
+
+
+def _cmd_s_learner(args) -> int:
+    X, W, treatment, outcome, true_ate = simulate_observational_data(
+        n=args.n,
+        d_x=args.d_x,
+        d_w=args.d_w,
+        ate=args.ate,
+        confounding=args.confounding,
+        selection_bias=args.selection_bias,
+        effect_heterogeneity=args.heterogeneity,
+        seed=args.seed,
+    )
+    result = s_learner(X, treatment, outcome, W=W if args.d_w > 0 else None)
+    print(
+        f"S-learner CATE  n={result.n} treated={result.n_treated} "
+        f"control={result.n_control}"
+    )
+    print(f"{'metric':<16}{'value':>12}")
+    print("-" * 28)
+    print(f"{'mean_cate':<16}{result.mean_cate:>12.4f}")
+    print(f"{'true_ate':<16}{true_ate:>12.4f}")
+    print(f"{'bias':<16}{result.mean_cate - true_ate:>12.4f}")
+    print(f"{'cate_std':<16}{float(result.cate.std()):>12.4f}")
+    print(f"{'cate_min':<16}{float(result.cate.min()):>12.4f}")
+    print(f"{'cate_max':<16}{float(result.cate.max()):>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -291,6 +321,20 @@ def build_parser() -> argparse.ArgumentParser:
     tl.add_argument("--heterogeneity", type=float, default=0.5, help="effect heterogeneity")
     tl.add_argument("--seed", type=int, default=0, help="simulation seed")
     tl.set_defaults(func=_cmd_t_learner)
+
+    sl = subparsers.add_parser(
+        "s-learner",
+        help="fit an S-learner CATE on synthetic observational data",
+    )
+    sl.add_argument("--n", type=int, default=2000, help="number of units")
+    sl.add_argument("--d-x", type=int, default=3, help="confounder columns")
+    sl.add_argument("--d-w", type=int, default=2, help="outcome-only covariate columns")
+    sl.add_argument("--ate", type=float, default=2.0, help="true average treatment effect")
+    sl.add_argument("--confounding", type=float, default=1.0, help="confounding strength")
+    sl.add_argument("--selection-bias", type=float, default=0.0, help="unobserved confounding")
+    sl.add_argument("--heterogeneity", type=float, default=0.5, help="effect heterogeneity")
+    sl.add_argument("--seed", type=int, default=0, help="simulation seed")
+    sl.set_defaults(func=_cmd_s_learner)
 
 
     return parser
