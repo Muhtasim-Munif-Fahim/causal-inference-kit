@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner."""
 
 from __future__ import annotations
 
@@ -2077,6 +2077,84 @@ def t_learner(X, treatment, outcome, W=None) -> TLearnerResult:
     mu1, mu0 = outcome_regression(X, treatment, outcome, W=W)
     cate = np.asarray(mu1 - mu0, dtype=float).ravel()
     return TLearnerResult(
+        mean_cate=float(np.mean(cate)),
+        cate=cate,
+        n=int(cate.shape[0]),
+        n_treated=int(treated.sum()),
+        n_control=int(control.sum()),
+    )
+
+
+@dataclass
+class SLearnerResult:
+    """S-learner conditional average treatment effect (CATE).
+
+    Attributes
+    ----------
+    mean_cate : float
+        Sample mean of the per-unit CATE predictions (an ATE estimate).
+    cate : ndarray of shape (n,)
+        Per-row CATE ``mu(x_i, 1) - mu(x_i, 0)``.
+    n : int
+        Number of observations.
+    n_treated : int
+        Number of treated units in the sample.
+    n_control : int
+        Number of control units in the sample.
+    """
+
+    mean_cate: float
+    cate: np.ndarray
+    n: int
+    n_treated: int
+    n_control: int
+
+
+def s_learner(X, treatment, outcome, W=None) -> SLearnerResult:
+    """S-learner CATE: a single outcome model with treatment as a feature.
+
+    Fits one OLS regression ``mu(z, t) = E[Y | Z, T]`` of the outcome on the
+    covariates ``Z = (X, W)`` stacked with the treatment indicator, then
+    returns the per-unit CATE
+
+    ``mu(z_i, 1) - mu(z_i, 0)``
+
+    by predicting with treatment set to 1 and 0 for every row. This is the
+    single-model meta-learner of Kunzel et al. (PNAS, 2019); with a linear
+    base learner the CATE is constant in the covariates unless interactions
+    are engineered into ``Z``. Contrast with :func:`t_learner`, which fits
+    separate outcome models on the treated and control groups.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders / features for the outcome model.
+    treatment : array-like of shape (n,)
+        Binary treatment indicator.
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates stacked onto ``X``.
+
+    Returns
+    -------
+    SLearnerResult
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    Z = _outcome_features(X, W)
+    # Design: intercept + Z + T
+    design = np.column_stack([np.ones(Z.shape[0]), Z, treatment.astype(float)])
+    coef, *_ = np.linalg.lstsq(design, outcome, rcond=None)
+    # Predict potential outcomes by flipping T
+    design1 = np.column_stack([np.ones(Z.shape[0]), Z, np.ones(Z.shape[0])])
+    design0 = np.column_stack([np.ones(Z.shape[0]), Z, np.zeros(Z.shape[0])])
+    mu1 = design1 @ coef
+    mu0 = design0 @ coef
+    cate = np.asarray(mu1 - mu0, dtype=float).ravel()
+    return SLearnerResult(
         mean_cate=float(np.mean(cate)),
         cate=cate,
         n=int(cate.shape[0]),
