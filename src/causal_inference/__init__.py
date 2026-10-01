@@ -8,6 +8,7 @@ from .estimators import (
     MediationResult,
     TLearnerResult,
     SLearnerResult,
+    XLearnerResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
@@ -25,6 +26,7 @@ from .estimators import (
     linear_mediation,
     t_learner,
     s_learner,
+    x_learner,
 )
 from .generators import (
     simulate_did_data,
@@ -55,6 +57,7 @@ __all__ = [
     "MediationResult",
     "TLearnerResult",
     "SLearnerResult",
+    "XLearnerResult",
     "LogisticFit",
     "PropensityHistogram",
     "RegressionDiscontinuityResult",
@@ -86,6 +89,7 @@ __all__ = [
     "synthetic_control",
     "t_learner",
     "s_learner",
+    "x_learner",
     "two_stage_least_squares",
     "weighted_standardized_mean_differences",
 ]

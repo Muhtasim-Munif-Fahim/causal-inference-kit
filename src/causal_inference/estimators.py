@@ -2162,3 +2162,94 @@ def s_learner(X, treatment, outcome, W=None) -> SLearnerResult:
         n_control=int(control.sum()),
     )
 
+
+@dataclass
+class XLearnerResult:
+    """X-learner conditional average treatment effect (CATE).
+
+    Attributes
+    ----------
+    mean_cate : float
+        Sample mean of the per-unit CATE predictions (an ATE estimate).
+    cate : ndarray of shape (n,)
+        Per-row CATE from the propensity-weighted combination of ``τ0`` and
+        ``τ1``.
+    n : int
+        Number of observations.
+    n_treated : int
+        Number of treated units used to fit ``μ1`` / ``τ1``.
+    n_control : int
+        Number of control units used to fit ``μ0`` / ``τ0``.
+    """
+
+    mean_cate: float
+    cate: np.ndarray
+    n: int
+    n_treated: int
+    n_control: int
+
+
+def x_learner(X, treatment, outcome, W=None, propensity=None) -> XLearnerResult:
+    """X-learner CATE (Künzel et al., PNAS 2019).
+
+    Four OLS stages on covariates ``Z = (X, W)``:
+
+    1. Fit outcome models ``μ0`` on controls and ``μ1`` on the treated
+       (same helpers as :func:`t_learner` / :func:`outcome_regression`).
+    2. Impute treatment effects on the observed arms:
+       ``D1 = Y1 - μ0(X1)`` for treated units and ``D0 = μ1(X0) - Y0`` for
+       controls.
+    3. Regress the imputed effects to obtain CATE models ``τ1`` (on treated)
+       and ``τ0`` (on control).
+    4. Combine with propensity weighting
+       ``τ(x) = e(x) τ0(x) + (1 - e(x)) τ1(x)``
+       where ``e(x)`` is the propensity score (estimated from ``X`` when
+       ``propensity`` is not supplied).
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders / features for the outcome and CATE models, and for the
+        propensity score when ``propensity`` is omitted.
+    treatment : array-like of shape (n,)
+        Binary treatment indicator.
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates stacked onto ``X`` for the outcome /
+        CATE regressions (not used in the propensity model).
+    propensity : array-like of shape (n,), optional
+        Pre-computed propensity scores ``P(T=1 | X)``.
+
+    Returns
+    -------
+    XLearnerResult
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    Z = _outcome_features(X, W)
+
+    # Stage 1–2: outcome models + imputed treatment effects on each arm.
+    d1 = outcome[treated] - _ols_predict(Z[control], outcome[control], Z[treated])
+    d0 = _ols_predict(Z[treated], outcome[treated], Z[control]) - outcome[control]
+
+    # Stage 3: CATE regressions τ1 (treated) and τ0 (control), predict on all rows.
+    tau1 = _ols_predict(Z[treated], d1, Z)
+    tau0 = _ols_predict(Z[control], d0, Z)
+
+    # Stage 4: propensity-weighted combination (Künzel et al.).
+    if propensity is None:
+        e, _ = propensity_scores(X, treatment)
+    else:
+        e = _validate_propensity(propensity, treatment.shape[0])
+    cate = np.asarray(e * tau0 + (1.0 - e) * tau1, dtype=float).ravel()
+    return XLearnerResult(
+        mean_cate=float(np.mean(cate)),
+        cate=cate,
+        n=int(cate.shape[0]),
+        n_treated=int(treated.sum()),
+        n_control=int(control.sum()),
+    )
+
