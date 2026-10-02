@@ -4,7 +4,7 @@ A small, dependency-light toolkit for estimating treatment effects from
 observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
 IPW / matching / AIPW / difference-in-differences / event-study DiD / synthetic-control /
-regression-discontinuity / two-stage least squares / linear mediation / T-learner / S-learner / X-learner CATE estimators, bootstrap
+regression-discontinuity / two-stage least squares / linear mediation / T-learner / S-learner / X-learner / R-learner CATE estimators, bootstrap
 evaluation against the ground truth, and markdown report rendering. Only
 `numpy` and `pandas` are required.
 
@@ -14,7 +14,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables; a linear mediation SEM |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner CATE (meta-learners with OLS base models) |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -39,6 +39,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | T-learner | mean CATE + per-row CATE | Separate OLS outcome models on treated vs control; CATE = μ₁(x) − μ₀(x) |
 | S-learner | mean CATE + per-row CATE | Single OLS with treatment as a feature; CATE = μ(x,1) − μ(x,0) |
 | X-learner | mean CATE + per-row CATE | Imputed effects D₁/D₀ → τ₁/τ₀ regressions; propensity-weighted combine |
+| R-learner | mean CATE + per-row CATE | Residual-on-residual: Ỹ=Y−m̂(x), T̃=T−ê(x); weighted OLS of Ỹ/T̃ |
 
 
 ## Event-study / dynamic DiD
@@ -139,6 +140,29 @@ print(result.mean_cate, result.cate[:5])
 
 ```bash
 python -m causal_inference.cli x-learner --n 2000 --ate 2.0 --heterogeneity 0.5
+```
+
+
+## R-learner CATE
+
+`r_learner` implements the R-learner meta-learner of Nie & Wager (JMLR,
+2021). It residualizes the outcome by an OLS nuisance `m̂(x) ≈ E[Y|X]`,
+residualizes treatment by the propensity `ê(x)`, then fits a weighted
+OLS of `Ỹ / (T − ê)` on covariates with weights `(T − ê)²` — the
+Robinson residual-on-residual regression that targets `τ(x)`.
+
+```python
+from causal_inference import r_learner, simulate_observational_data
+
+X, W, treatment, outcome, true_ate = simulate_observational_data(
+    n=2000, ate=2.0, effect_heterogeneity=0.5, seed=0
+)
+result = r_learner(X, treatment, outcome, W=W)
+print(result.mean_cate, result.cate[:5])
+```
+
+```bash
+python -m causal_inference.cli r-learner --n 2000 --ate 2.0 --heterogeneity 0.5
 ```
 
 
