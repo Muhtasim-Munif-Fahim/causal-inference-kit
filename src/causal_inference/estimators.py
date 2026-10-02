@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner, X-learner, R-learner."""
 
 from __future__ import annotations
 
@@ -50,6 +50,33 @@ def _outcome_features(X, W=None):
     if W.shape[1] == 0:
         return X
     return np.column_stack([X, W])
+
+
+
+def _weighted_ols_predict(Z_train, y_train, weights, Z_pred):
+    """Weighted OLS with intercept: fit on ``Z_train`` and predict on ``Z_pred``.
+
+    Rows are reweighted by ``sqrt(weights)`` so the normal equations solve
+    the weighted least-squares problem
+    ``argmin_b sum_i w_i (y_i - [1, z_i] b)^2``.
+    """
+    n_train = Z_train.shape[0]
+    if n_train == 0:
+        raise ValueError("both treatment groups must be present")
+    w = np.asarray(weights, dtype=float).ravel()
+    if w.shape[0] != n_train:
+        raise ValueError("weights must have one entry per training row")
+    if np.any(w < 0) or not np.all(np.isfinite(w)):
+        raise ValueError("weights must be finite and non-negative")
+    if float(np.sum(w)) <= 0.0:
+        raise ValueError("weights must sum to a positive value")
+    sqrt_w = np.sqrt(w)
+    design = np.column_stack([np.ones(n_train), Z_train])
+    design_w = design * sqrt_w[:, None]
+    y_w = np.asarray(y_train, dtype=float).ravel() * sqrt_w
+    coef, *_ = np.linalg.lstsq(design_w, y_w, rcond=None)
+    design_pred = np.column_stack([np.ones(Z_pred.shape[0]), Z_pred])
+    return design_pred @ coef
 
 
 def _ols_predict(Z_train, y_train, Z_pred):
@@ -2246,6 +2273,114 @@ def x_learner(X, treatment, outcome, W=None, propensity=None) -> XLearnerResult:
         e = _validate_propensity(propensity, treatment.shape[0])
     cate = np.asarray(e * tau0 + (1.0 - e) * tau1, dtype=float).ravel()
     return XLearnerResult(
+        mean_cate=float(np.mean(cate)),
+        cate=cate,
+        n=int(cate.shape[0]),
+        n_treated=int(treated.sum()),
+        n_control=int(control.sum()),
+    )
+
+
+@dataclass
+class RLearnerResult:
+    """R-learner conditional average treatment effect (CATE).
+
+    Attributes
+    ----------
+    mean_cate : float
+        Sample mean of the per-unit CATE predictions (an ATE estimate).
+    cate : ndarray of shape (n,)
+        Per-row CATE from the residual-on-residual regression.
+    n : int
+        Number of observations.
+    n_treated : int
+        Number of treated units.
+    n_control : int
+        Number of control units.
+    """
+
+    mean_cate: float
+    cate: np.ndarray
+    n: int
+    n_treated: int
+    n_control: int
+
+
+def r_learner(X, treatment, outcome, W=None, propensity=None) -> RLearnerResult:
+    """R-learner CATE (Nie & Wager, JMLR 2021).
+
+    Residual-on-residual meta-learner:
+
+    1. Fit the outcome nuisance ``m̂(x) ≈ E[Y | X]`` by OLS on all rows
+       (covariates ``Z = (X, W)``).
+    2. Obtain the propensity ``ê(x) ≈ P(T=1 | X)`` (estimated from ``X``
+       when ``propensity`` is omitted).
+    3. Form residuals ``Ỹ = Y - m̂(X)`` and ``T̃ = T - ê(X)``.
+    4. Regress the residualized outcome on ``Z`` with weights
+       ``(T - ê)^2`` targeting the Robinson residualized regression
+       ``Ỹ ≈ T̃ · τ(X)``. Equivalently this is weighted OLS of
+       ``Ỹ / T̃`` on ``Z`` with those weights (rows with tiny
+       ``|T̃|`` are dropped from the fit but still receive a CATE
+       prediction).
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders / features for the outcome and CATE models, and for the
+        propensity score when ``propensity`` is omitted.
+    treatment : array-like of shape (n,)
+        Binary treatment indicator.
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates stacked onto ``X`` for the outcome /
+        CATE regressions (not used in the propensity model).
+    propensity : array-like of shape (n,), optional
+        Pre-computed propensity scores ``P(T=1 | X)``.
+
+    Returns
+    -------
+    RLearnerResult
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    Z = _outcome_features(X, W)
+
+    # Stage 1: outcome nuisance m̂(x) = E[Y | X] on all rows.
+    m_hat = _ols_predict(Z, outcome, Z)
+
+    # Stage 2: propensity ê(x).
+    if propensity is None:
+        e, _ = propensity_scores(X, treatment)
+    else:
+        e = _validate_propensity(propensity, treatment.shape[0])
+
+    # Stage 3: residualize.
+    y_res = outcome - m_hat
+    t_res = treatment.astype(float) - e
+
+    # Stage 4: weighted residual-on-residual regression.
+    # Target Ỹ / T̃ with weights T̃² ⇔ minimize E[(Ỹ - T̃ τ(X))²].
+    eps = 1e-8
+    mask = np.abs(t_res) > eps
+    if int(mask.sum()) < Z.shape[1] + 1:
+        # Degenerate propensity residuals: fall back to unweighted OLS of
+        # Ỹ on T̃ * [1, Z] (Robinson regression without division).
+        design = np.column_stack([np.ones(Z.shape[0]), Z])
+        A = t_res[:, None] * design
+        coef, *_ = np.linalg.lstsq(A, y_res, rcond=None)
+        cate = np.asarray(design @ coef, dtype=float).ravel()
+    else:
+        target = y_res[mask] / t_res[mask]
+        weights = t_res[mask] ** 2
+        cate = np.asarray(
+            _weighted_ols_predict(Z[mask], target, weights, Z),
+            dtype=float,
+        ).ravel()
+
+    return RLearnerResult(
         mean_cate=float(np.mean(cate)),
         cate=cate,
         n=int(cate.shape[0]),
