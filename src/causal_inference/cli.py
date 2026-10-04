@@ -18,6 +18,7 @@ from .estimators import (
     s_learner,
     x_learner,
     r_learner,
+    dr_learner,
     ipw_ate,
     ipw_att,
     ipw_weights,
@@ -301,6 +302,34 @@ def _cmd_r_learner(args) -> int:
     return 0
 
 
+
+def _cmd_dr_learner(args) -> int:
+    X, W, treatment, outcome, true_ate = simulate_observational_data(
+        n=args.n,
+        d_x=args.d_x,
+        d_w=args.d_w,
+        ate=args.ate,
+        confounding=args.confounding,
+        selection_bias=args.selection_bias,
+        effect_heterogeneity=args.heterogeneity,
+        seed=args.seed,
+    )
+    result = dr_learner(X, treatment, outcome, W=W if args.d_w > 0 else None)
+    print(
+        f"DR-learner CATE  n={result.n} treated={result.n_treated} "
+        f"control={result.n_control}"
+    )
+    print(f"{'metric':<16}{'value':>12}")
+    print("-" * 28)
+    print(f"{'mean_cate':<16}{result.mean_cate:>12.4f}")
+    print(f"{'true_ate':<16}{true_ate:>12.4f}")
+    print(f"{'bias':<16}{result.mean_cate - true_ate:>12.4f}")
+    print(f"{'cate_std':<16}{float(result.cate.std()):>12.4f}")
+    print(f"{'cate_min':<16}{float(result.cate.min()):>12.4f}")
+    print(f"{'cate_max':<16}{float(result.cate.max()):>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -422,6 +451,20 @@ def build_parser() -> argparse.ArgumentParser:
     rl.add_argument("--heterogeneity", type=float, default=0.5, help="effect heterogeneity")
     rl.add_argument("--seed", type=int, default=0, help="simulation seed")
     rl.set_defaults(func=_cmd_r_learner)
+
+    drl = subparsers.add_parser(
+        "dr-learner",
+        help="fit a DR-learner CATE on synthetic observational data",
+    )
+    drl.add_argument("--n", type=int, default=2000, help="number of units")
+    drl.add_argument("--d-x", type=int, default=3, help="confounder columns")
+    drl.add_argument("--d-w", type=int, default=2, help="outcome-only covariate columns")
+    drl.add_argument("--ate", type=float, default=2.0, help="true average treatment effect")
+    drl.add_argument("--confounding", type=float, default=1.0, help="confounding strength")
+    drl.add_argument("--selection-bias", type=float, default=0.0, help="unobserved confounding")
+    drl.add_argument("--heterogeneity", type=float, default=0.5, help="effect heterogeneity")
+    drl.add_argument("--seed", type=int, default=0, help="simulation seed")
+    drl.set_defaults(func=_cmd_dr_learner)
 
 
     return parser
