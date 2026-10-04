@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner, X-learner, R-learner."""
+"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner, X-learner, R-learner, DR-learner."""
 
 from __future__ import annotations
 
@@ -2381,6 +2381,100 @@ def r_learner(X, treatment, outcome, W=None, propensity=None) -> RLearnerResult:
         ).ravel()
 
     return RLearnerResult(
+        mean_cate=float(np.mean(cate)),
+        cate=cate,
+        n=int(cate.shape[0]),
+        n_treated=int(treated.sum()),
+        n_control=int(control.sum()),
+    )
+
+
+@dataclass
+class DRLearnerResult:
+    """DR-learner conditional average treatment effect (CATE).
+
+    Attributes
+    ----------
+    mean_cate : float
+        Sample mean of the per-unit CATE predictions (an ATE estimate).
+    cate : ndarray of shape (n,)
+        Per-row CATE from the doubly-robust pseudo-outcome regression.
+    n : int
+        Number of observations.
+    n_treated : int
+        Number of treated units.
+    n_control : int
+        Number of control units.
+    """
+
+    mean_cate: float
+    cate: np.ndarray
+    n: int
+    n_treated: int
+    n_control: int
+
+
+def dr_learner(X, treatment, outcome, W=None, propensity=None) -> DRLearnerResult:
+    """DR-learner CATE (Kennedy doubly-robust meta-learner).
+
+    Three stages with OLS base learners on covariates ``Z = (X, W)``:
+
+    1. Fit propensity ``ê(x) ≈ P(T=1 | X)`` (estimated from ``X`` when
+       ``propensity`` is omitted) and outcome models ``μ̂0``, ``μ̂1`` on
+       control / treated rows (same helpers as :func:`t_learner`).
+    2. Form the doubly-robust pseudo-outcome
+
+       ``φ̂_i = μ̂1(z_i) - μ̂0(z_i)
+              + T_i (Y_i - μ̂1(z_i)) / ê(x_i)
+              - (1 - T_i) (Y_i - μ̂0(z_i)) / (1 - ê(x_i))``.
+
+    3. Regress ``φ̂`` on ``Z`` with OLS to obtain CATE ``τ̂(x)``; the sample
+       mean of ``τ̂`` is reported as ``mean_cate`` (an ATE estimate).
+
+    Propensity scores are clipped away from ``{0, 1}`` before the IPW
+    correction terms to keep the pseudo-outcome finite.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Confounders / features for the outcome and CATE models, and for the
+        propensity score when ``propensity`` is omitted.
+    treatment : array-like of shape (n,)
+        Binary treatment indicator.
+    outcome : array-like of shape (n,)
+    W : array-like of shape (n, d_w), optional
+        Extra outcome-only covariates stacked onto ``X`` for the outcome /
+        CATE regressions (not used in the propensity model).
+    propensity : array-like of shape (n,), optional
+        Pre-computed propensity scores ``P(T=1 | X)``.
+
+    Returns
+    -------
+    DRLearnerResult
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+    Z = _outcome_features(X, W)
+
+    # Stage 1: propensity and outcome models.
+    if propensity is None:
+        e, _ = propensity_scores(X, treatment)
+    else:
+        e = _validate_propensity(propensity, treatment.shape[0])
+    e = np.clip(e, 1e-6, 1.0 - 1e-6)
+    mu1, mu0 = outcome_regression(X, treatment, outcome, W=W)
+
+    # Stage 2: doubly-robust pseudo-outcome (Kennedy).
+    t = treatment.astype(float)
+    phi = (mu1 - mu0) + t * (outcome - mu1) / e - (1.0 - t) * (outcome - mu0) / (1.0 - e)
+
+    # Stage 3: OLS of φ̂ on Z → τ̂(x).
+    cate = np.asarray(_ols_predict(Z, phi, Z), dtype=float).ravel()
+
+    return DRLearnerResult(
         mean_cate=float(np.mean(cate)),
         cate=cate,
         n=int(cate.shape[0]),

@@ -10,6 +10,7 @@ from .estimators import (
     SLearnerResult,
     XLearnerResult,
     RLearnerResult,
+    DRLearnerResult,
     RegressionDiscontinuityResult,
     SyntheticControlResult,
     aipw_ate,
@@ -29,6 +30,7 @@ from .estimators import (
     s_learner,
     x_learner,
     r_learner,
+    dr_learner,
 )
 from .generators import (
     simulate_did_data,
@@ -61,6 +63,7 @@ __all__ = [
     "SLearnerResult",
     "XLearnerResult",
     "RLearnerResult",
+    "DRLearnerResult",
     "LogisticFit",
     "PropensityHistogram",
     "RegressionDiscontinuityResult",
@@ -94,6 +97,7 @@ __all__ = [
     "s_learner",
     "x_learner",
     "r_learner",
+    "dr_learner",
     "two_stage_least_squares",
     "weighted_standardized_mean_differences",
 ]
