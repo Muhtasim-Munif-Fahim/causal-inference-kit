@@ -14,7 +14,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables; a linear mediation SEM |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -25,6 +25,8 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- | --- |
 | Naive difference in means | ATE | Baseline; biased under confounding |
 | IPW (stabilized, Hájek) | ATE | Inverse probability weighting with stabilized weights |
+| Overlap weights (ATO) | ATE (overlap) | Li–Morgan–Zaslavsky: `w=1-e` (treated), `w=e` (control) |
+| Matching weights | ATE | Continuous 1:1-matching analogue: `min(e,1-e)/e` (treated) |
 | IPW (raw, Horvitz-Thompson) | ATE | Unnormalized inverse-probability difference |
 | IPW | ATT | Controls reweighted by the odds |
 | AIPW (augmented IPW) | ATE | Doubly robust: OLS outcome regression plus IPW residual correction |
@@ -42,6 +44,23 @@ evaluation against the ground truth, and markdown report rendering. Only
 | R-learner | mean CATE + per-row CATE | Residual-on-residual: Ỹ=Y−m̂(x), T̃=T−ê(x); weighted OLS of Ỹ/T̃ |
 | DR-learner | mean CATE + per-row CATE | Doubly-robust pseudo-outcome φ̂ then OLS of φ̂ on Z (Kennedy) |
 
+
+## Overlap and matching weights
+
+`overlap_weights` / `overlap_ate` implement Li, Morgan & Zaslavsky (2018)
+overlap weighting. Treated units get weight `1 - e(x)` and controls get
+`e(x)`, so the estimand is the average treatment effect in the *overlap*
+population (ATO). `matching_weights` / `matching_weights_ate` use
+`min(e, 1-e) / e` (treated) and `min(e, 1-e) / (1-e)` (control), a continuous
+analogue of 1:1 propensity matching.
+
+```python
+from causal_inference import overlap_ate, matching_weights_ate, simulate_observational_data
+
+X, W, treatment, outcome, true_ate = simulate_observational_data(n=5000, seed=0)
+print(overlap_ate(X, treatment, outcome))
+print(matching_weights_ate(X, treatment, outcome))
+```
 
 ## Event-study / dynamic DiD
 

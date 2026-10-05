@@ -229,6 +229,142 @@ def ipw_att(X, treatment, outcome, propensity=None) -> float:
     )
 
 
+
+def overlap_weights(X, treatment, propensity=None) -> np.ndarray:
+    """Overlap weights (Li, Morgan & Zaslavsky, 2018).
+
+    For a propensity score ``e(x) = P(T=1 | X=x)`` the overlap weight of a
+    treated unit is ``1 - e`` and of a control unit is ``e``. These weights
+    target the average treatment effect in the *overlap* population (ATO):
+    units whose propensity is near 1/2 receive the largest weight, while
+    units in the tails are down-weighted. All weights are non-negative and
+    automatically bounded in ``[0, 1]``.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+
+    Returns
+    -------
+    ndarray of shape (n,)
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+    treatment = _validate_treatment(treatment)
+    if X.shape[0] != treatment.shape[0]:
+        raise ValueError("X and treatment must have the same number of rows")
+    if X.shape[0] == 0:
+        raise ValueError("at least one row of data is required")
+    if propensity is None:
+        p, _ = propensity_scores(X, treatment)
+    else:
+        p = _validate_propensity(propensity, treatment.shape[0])
+    treated = treatment == 1
+    if not (treated.any() and (~treated).any()):
+        raise ValueError("both treatment groups must be present")
+    return np.where(treated, 1.0 - p, p)
+
+
+def matching_weights(X, treatment, propensity=None) -> np.ndarray:
+    """Matching weights (Li & Greene / Li, Morgan & Zaslavsky family).
+
+    Each unit is weighted by ``min(e, 1 - e) / e`` when treated and
+    ``min(e, 1 - e) / (1 - e)`` when control. Units with extreme
+    propensities are down-weighted relative to IPW; the target population
+    is the one obtained by 1:1 matching on the propensity score.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+
+    Returns
+    -------
+    ndarray of shape (n,)
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+    treatment = _validate_treatment(treatment)
+    if X.shape[0] != treatment.shape[0]:
+        raise ValueError("X and treatment must have the same number of rows")
+    if X.shape[0] == 0:
+        raise ValueError("at least one row of data is required")
+    if propensity is None:
+        p, _ = propensity_scores(X, treatment)
+    else:
+        p = _validate_propensity(propensity, treatment.shape[0])
+    treated = treatment == 1
+    if not (treated.any() and (~treated).any()):
+        raise ValueError("both treatment groups must be present")
+    m = np.minimum(p, 1.0 - p)
+    return np.where(treated, m / p, m / (1.0 - p))
+
+
+def _weighted_group_ate(treatment, outcome, weights) -> float:
+    """Hájek difference of weighted group means."""
+    treated = treatment == 1
+    control = ~treated
+    w_t = weights[treated]
+    w_c = weights[control]
+    if w_t.sum() <= 0 or w_c.sum() <= 0:
+        raise ValueError("weights sum to zero in one of the groups")
+    return float(
+        np.sum(w_t * outcome[treated]) / w_t.sum()
+        - np.sum(w_c * outcome[control]) / w_c.sum()
+    )
+
+
+def overlap_ate(X, treatment, outcome, propensity=None) -> float:
+    """Overlap-weighted ATE (ATO) of Li, Morgan & Zaslavsky (2018).
+
+    Applies :func:`overlap_weights` and returns the Hájek difference of
+    weighted group means. Under correct propensity specification this
+    targets the average treatment effect in the overlap population.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    outcome : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+
+    Returns
+    -------
+    float
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    weights = overlap_weights(X, treatment, propensity=propensity)
+    return _weighted_group_ate(treatment, outcome, weights)
+
+
+def matching_weights_ate(X, treatment, outcome, propensity=None) -> float:
+    """Matching-weighted ATE using :func:`matching_weights`.
+
+    Hájek difference of group means under matching weights. Complements
+    nearest-neighbour :func:`propensity_matching` with a continuous
+    weight analogue of 1:1 matching.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+    treatment : array-like of shape (n,)
+    outcome : array-like of shape (n,)
+    propensity : array-like of shape (n,), optional
+
+    Returns
+    -------
+    float
+    """
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    weights = matching_weights(X, treatment, propensity=propensity)
+    return _weighted_group_ate(treatment, outcome, weights)
+
+
 def outcome_regression(X, treatment, outcome, W=None):
     """Separate OLS outcome models for the treated and control groups.
 
