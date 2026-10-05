@@ -22,6 +22,8 @@ from .estimators import (
     ipw_ate,
     ipw_att,
     ipw_weights,
+    matching_weights_ate,
+    overlap_ate,
     propensity_matching,
 )
 from .evaluate import evaluate, standard_estimators
@@ -77,6 +79,8 @@ def _cmd_estimate(args) -> int:
     estimators = {
         "naive": difference_in_means(treatment, outcome),
         "ipw": ipw_ate(X, treatment, outcome, propensity=p),
+        "overlap": overlap_ate(X, treatment, outcome, propensity=p),
+        "matching_weights": matching_weights_ate(X, treatment, outcome, propensity=p),
         "aipw": aipw_ate(X, treatment, outcome, propensity=p, W=W),
         "ipw_att": ipw_att(X, treatment, outcome, propensity=p),
         "matching": propensity_matching(

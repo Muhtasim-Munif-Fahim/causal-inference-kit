@@ -6,7 +6,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .estimators import aipw_ate, difference_in_means, ipw_ate, ipw_att, propensity_matching
+from .estimators import (
+    aipw_ate,
+    difference_in_means,
+    ipw_ate,
+    ipw_att,
+    matching_weights_ate,
+    overlap_ate,
+    propensity_matching,
+)
 from .propensity import propensity_scores
 
 
@@ -44,13 +52,16 @@ def standard_estimators() -> dict:
     Each callable has the signature ``fn(X, W, treatment, outcome,
     propensity)`` where ``propensity`` is the fixed first-stage propensity
     score from the full sample. Included are the naive difference in means,
-    stabilized IPW and doubly robust AIPW for the ATE, IPW for the ATT, and
-    nearest-neighbor matching with replacement for the ATT. AIPW's outcome
+    stabilized IPW, overlap-weighted ATE, matching-weighted ATE, and doubly
+    robust AIPW for the ATE, IPW for the ATT, and nearest-neighbor matching
+    with replacement for the ATT. AIPW's outcome
     regressions use both ``X`` and ``W``.
     """
     return {
         "naive": lambda X, W, t, y, p: difference_in_means(t, y),
         "ipw": lambda X, W, t, y, p: ipw_ate(X, t, y, propensity=p),
+        "overlap": lambda X, W, t, y, p: overlap_ate(X, t, y, propensity=p),
+        "matching_weights": lambda X, W, t, y, p: matching_weights_ate(X, t, y, propensity=p),
         "aipw": lambda X, W, t, y, p: aipw_ate(X, t, y, propensity=p, W=W),
         "ipw_att": lambda X, W, t, y, p: ipw_att(X, t, y, propensity=p),
         "matching": lambda X, W, t, y, p: propensity_matching(
