@@ -9,6 +9,7 @@ import numpy as np
 from .estimators import (
     aipw_ate,
     difference_in_means,
+    entropy_balancing_ate,
     ipw_ate,
     ipw_att,
     matching_weights_ate,
@@ -52,7 +53,8 @@ def standard_estimators() -> dict:
     Each callable has the signature ``fn(X, W, treatment, outcome,
     propensity)`` where ``propensity`` is the fixed first-stage propensity
     score from the full sample. Included are the naive difference in means,
-    stabilized IPW, overlap-weighted ATE, matching-weighted ATE, and doubly
+    stabilized IPW, overlap-weighted ATE, matching-weighted ATE, entropy-balancing
+    ATE (propensity-free; ``p`` is ignored), and doubly
     robust AIPW for the ATE, IPW for the ATT, and nearest-neighbor matching
     with replacement for the ATT. AIPW's outcome
     regressions use both ``X`` and ``W``.
@@ -62,6 +64,7 @@ def standard_estimators() -> dict:
         "ipw": lambda X, W, t, y, p: ipw_ate(X, t, y, propensity=p),
         "overlap": lambda X, W, t, y, p: overlap_ate(X, t, y, propensity=p),
         "matching_weights": lambda X, W, t, y, p: matching_weights_ate(X, t, y, propensity=p),
+        "entropy_balancing": lambda X, W, t, y, p: entropy_balancing_ate(X, t, y),
         "aipw": lambda X, W, t, y, p: aipw_ate(X, t, y, propensity=p, W=W),
         "ipw_att": lambda X, W, t, y, p: ipw_att(X, t, y, propensity=p),
         "matching": lambda X, W, t, y, p: propensity_matching(

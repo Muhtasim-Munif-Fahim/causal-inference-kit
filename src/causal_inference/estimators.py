@@ -1,4 +1,4 @@
-"""Treatment-effect estimators: IPW, AIPW, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner, X-learner, R-learner, DR-learner."""
+"""Treatment-effect estimators: IPW, AIPW, entropy balancing, matching, DiD, event-study DiD, synthetic control, RD, 2SLS, mediation, T-learner, S-learner, X-learner, R-learner, DR-learner."""
 
 from __future__ import annotations
 
@@ -362,6 +362,166 @@ def matching_weights_ate(X, treatment, outcome, propensity=None) -> float:
     """
     X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
     weights = matching_weights(X, treatment, propensity=propensity)
+    return _weighted_group_ate(treatment, outcome, weights)
+
+
+def _balance_features(X, moments: int) -> np.ndarray:
+    """Standardized covariates (and squares when ``moments == 2``)."""
+    mu = X.mean(axis=0)
+    sd = X.std(axis=0)
+    sd = np.where(sd > 0, sd, 1.0)
+    Z = (X - mu) / sd
+    if moments == 2:
+        Z = np.column_stack([Z, Z ** 2])
+    keep = Z.std(axis=0) > 0
+    return Z[:, keep]
+
+
+def _entropy_balance_group(C, target, base, max_iter, tol):
+    """Solve the entropy-balancing dual for one group.
+
+    Minimises ``log sum_i q_i exp(lam . (c_i - m))`` by damped Newton. The
+    gradient is the weighted moment imbalance, so convergence means the
+    reweighted group matches ``target`` exactly.
+    """
+    D = C - target
+    q = base / base.sum()
+    log_q = np.log(q)
+    lam = np.zeros(D.shape[1])
+
+    def objective(l):
+        z = log_q + D @ l
+        zmax = z.max()
+        return zmax + np.log(np.exp(z - zmax).sum())
+
+    for _ in range(max_iter):
+        z = log_q + D @ lam
+        w = np.exp(z - z.max())
+        w /= w.sum()
+        grad = D.T @ w
+        if np.max(np.abs(grad)) < tol:
+            return w
+        H = (D * w[:, None]).T @ D - np.outer(grad, grad)
+        H += 1e-10 * np.eye(H.shape[0])
+        try:
+            step = np.linalg.solve(H, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.lstsq(H, grad, rcond=None)[0]
+        f0 = objective(lam)
+        t = 1.0
+        while t > 1e-10:
+            if objective(lam - t * step) <= f0 - 1e-4 * t * float(grad @ step):
+                break
+            t *= 0.5
+        lam = lam - t * step
+    raise ValueError(
+        "entropy balancing did not converge; the target moments may lie "
+        "outside the convex hull of the reweighted group"
+    )
+
+
+def entropy_balancing_weights(
+    X,
+    treatment,
+    estimand: str = "att",
+    moments: int = 1,
+    base_weights=None,
+    max_iter: int = 200,
+    tol: float = 1e-8,
+) -> np.ndarray:
+    """Entropy balancing weights (Hainmueller, 2012).
+
+    Finds the weights closest (in Kullback-Leibler divergence) to
+    ``base_weights`` that make the reweighted covariate moments of a group
+    match a target *exactly*. No propensity model is fitted, so balance on
+    the chosen moments holds by construction rather than by luck of the
+    model specification.
+
+    - ``estimand="att"``: controls are reweighted to the treated means;
+      treated units keep weight 1 and control weights sum to the number of
+      treated units.
+    - ``estimand="ate"``: both groups are reweighted to the full-sample
+      means; each group's weights sum to its own size.
+
+    Parameters
+    ----------
+    X : array-like of shape (n, d)
+        Covariates to balance.
+    treatment : array-like of shape (n,)
+    estimand : {"att", "ate"}
+    moments : {1, 2}
+        Balance means (1) or means and second moments (2).
+    base_weights : array-like of shape (n,), optional
+        Positive design weights ``q``; uniform by default.
+    max_iter, tol : Newton iteration cap and tolerance on the maximum
+        standardized moment imbalance.
+
+    Returns
+    -------
+    ndarray of shape (n,)
+
+    Raises
+    ------
+    ValueError
+        If the target moments cannot be reached (e.g. no overlap).
+    """
+    X = _as_2d(X)
+    treatment = _validate_treatment(treatment)
+    if X.shape[0] != treatment.shape[0]:
+        raise ValueError("X and treatment must have the same number of rows")
+    if X.shape[0] == 0:
+        raise ValueError("at least one row of data is required")
+    estimand = str(estimand).lower()
+    if estimand not in ("att", "ate"):
+        raise ValueError("estimand must be 'att' or 'ate'")
+    if moments not in (1, 2):
+        raise ValueError("moments must be 1 or 2")
+    if int(max_iter) < 1 or tol <= 0:
+        raise ValueError("max_iter must be >= 1 and tol must be positive")
+    if base_weights is None:
+        base = np.ones(X.shape[0])
+    else:
+        base = np.asarray(base_weights, dtype=float).ravel()
+        if base.shape[0] != X.shape[0]:
+            raise ValueError("base_weights must have one entry per unit")
+        if not np.all(np.isfinite(base)) or np.any(base <= 0):
+            raise ValueError("base_weights must be finite and positive")
+    treated = treatment == 1
+    control = ~treated
+    if not (treated.any() and control.any()):
+        raise ValueError("both treatment groups must be present")
+
+    C = _balance_features(X, moments)
+    weights = np.zeros(X.shape[0])
+    if estimand == "att":
+        q_t = base[treated] / base[treated].sum()
+        target = q_t @ C[treated]
+        weights[treated] = base[treated] / base[treated].mean()
+        w_c = _entropy_balance_group(C[control], target, base[control], int(max_iter), tol)
+        weights[control] = w_c * treated.sum()
+    else:
+        target = (base / base.sum()) @ C
+        for group in (treated, control):
+            w_g = _entropy_balance_group(C[group], target, base[group], int(max_iter), tol)
+            weights[group] = w_g * group.sum()
+    return weights
+
+
+def entropy_balancing_att(X, treatment, outcome, moments: int = 1, base_weights=None) -> float:
+    """ATT from :func:`entropy_balancing_weights` (controls matched to treated)."""
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    weights = entropy_balancing_weights(
+        X, treatment, estimand="att", moments=moments, base_weights=base_weights
+    )
+    return _weighted_group_ate(treatment, outcome, weights)
+
+
+def entropy_balancing_ate(X, treatment, outcome, moments: int = 1, base_weights=None) -> float:
+    """ATE from :func:`entropy_balancing_weights` (both groups matched to the sample)."""
+    X, treatment, outcome = _coerce_arrays(X, treatment, outcome)
+    weights = entropy_balancing_weights(
+        X, treatment, estimand="ate", moments=moments, base_weights=base_weights
+    )
     return _weighted_group_ate(treatment, outcome, weights)
 
 

@@ -11,6 +11,7 @@ from . import __version__
 from .estimators import (
     aipw_ate,
     difference_in_means,
+    entropy_balancing_ate,
     difference_in_differences,
     event_study_did,
     linear_mediation,
@@ -81,6 +82,7 @@ def _cmd_estimate(args) -> int:
         "ipw": ipw_ate(X, treatment, outcome, propensity=p),
         "overlap": overlap_ate(X, treatment, outcome, propensity=p),
         "matching_weights": matching_weights_ate(X, treatment, outcome, propensity=p),
+        "entropy_bal": entropy_balancing_ate(X, treatment, outcome),
         "aipw": aipw_ate(X, treatment, outcome, propensity=p, W=W),
         "ipw_att": ipw_att(X, treatment, outcome, propensity=p),
         "matching": propensity_matching(

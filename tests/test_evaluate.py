@@ -93,7 +93,16 @@ def test_evaluate_list_of_pairs():
 
 
 def test_standard_estimators_names():
-    assert list(standard_estimators()) == ["naive", "ipw", "aipw", "ipw_att", "matching"]
+    assert list(standard_estimators()) == [
+        "naive",
+        "ipw",
+        "overlap",
+        "matching_weights",
+        "entropy_balancing",
+        "aipw",
+        "ipw_att",
+        "matching",
+    ]
 
 
 def test_standard_estimators_recover_truth():
