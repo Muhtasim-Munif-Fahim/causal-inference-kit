@@ -14,7 +14,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | --- | --- |
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables; a linear mediation SEM |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
-| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
+| `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -27,6 +27,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | IPW (stabilized, Hájek) | ATE | Inverse probability weighting with stabilized weights |
 | Overlap weights (ATO) | ATE (overlap) | Li–Morgan–Zaslavsky: `w=1-e` (treated), `w=e` (control) |
 | Matching weights | ATE | Continuous 1:1-matching analogue: `min(e,1-e)/e` (treated) |
+| Entropy balancing | ATT / ATE | Hainmueller (2012): max-entropy weights that match covariate means (optionally second moments) exactly; no propensity model |
 | IPW (raw, Horvitz-Thompson) | ATE | Unnormalized inverse-probability difference |
 | IPW | ATT | Controls reweighted by the odds |
 | AIPW (augmented IPW) | ATE | Doubly robust: OLS outcome regression plus IPW residual correction |
@@ -60,6 +61,31 @@ from causal_inference import overlap_ate, matching_weights_ate, simulate_observa
 X, W, treatment, outcome, true_ate = simulate_observational_data(n=5000, seed=0)
 print(overlap_ate(X, treatment, outcome))
 print(matching_weights_ate(X, treatment, outcome))
+```
+
+## Entropy balancing
+
+`entropy_balancing_weights` (Hainmueller, 2012) finds the weights closest in
+KL divergence to uniform (or to `base_weights`) whose reweighted covariate
+moments match a target **exactly**, solving the convex dual by damped Newton.
+With `estimand="att"` controls are matched to the treated means; with
+`estimand="ate"` both groups are matched to the full-sample means. Pass
+`moments=2` to balance variances too. `entropy_balancing_att` /
+`entropy_balancing_ate` return the Hájek difference of weighted means, and a
+`ValueError` flags targets outside the controls' convex hull (no overlap).
+
+```python
+from causal_inference import (
+    entropy_balancing_att,
+    entropy_balancing_weights,
+    simulate_observational_data,
+    weighted_standardized_mean_differences,
+)
+
+X, W, treatment, outcome, true_ate = simulate_observational_data(n=5000, seed=0)
+w = entropy_balancing_weights(X, treatment, estimand="att")
+print(weighted_standardized_mean_differences(X, treatment, w))  # ~0 for every column
+print(entropy_balancing_att(X, treatment, outcome))
 ```
 
 ## Event-study / dynamic DiD
