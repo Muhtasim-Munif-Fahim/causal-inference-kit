@@ -57,6 +57,15 @@ from .propensity import (
     weighted_standardized_mean_differences,
 )
 from .report import render_report
+from .sensitivity import (
+    EValueResult,
+    RosenbaumBoundsResult,
+    bias_factor,
+    e_value,
+    e_value_from_ate,
+    rosenbaum_bounds,
+    rosenbaum_sensitivity_value,
+)
 
 __version__ = "0.1.0"
 
@@ -64,6 +73,13 @@ __all__ = [
     "DifferenceInDifferencesResult",
     "EventStudyResult",
     "EvaluationResult",
+    "EValueResult",
+    "RosenbaumBoundsResult",
+    "bias_factor",
+    "e_value",
+    "e_value_from_ate",
+    "rosenbaum_bounds",
+    "rosenbaum_sensitivity_value",
     "InstrumentalVariablesResult",
     "MediationResult",
     "TLearnerResult",
