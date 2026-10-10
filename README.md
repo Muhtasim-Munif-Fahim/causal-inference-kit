@@ -5,7 +5,7 @@ observational data. It includes a synthetic data generator with known
 ground-truth effects, a propensity-score model fitted by gradient descent,
 IPW / matching / AIPW / difference-in-differences / event-study DiD / synthetic-control /
 regression-discontinuity / two-stage least squares / linear mediation / T-learner / S-learner / X-learner / R-learner / DR-learner CATE estimators, bootstrap
-evaluation against the ground truth, and markdown report rendering. Only
+evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity analysis for unmeasured confounding, and markdown report rendering. Only
 `numpy` and `pandas` are required.
 
 ## Contents
@@ -15,6 +15,7 @@ evaluation against the ground truth, and markdown report rendering. Only
 | `causal_inference.generators` | Synthetic observational data with known ATE, confounding, effect heterogeneity and a hidden-confounding (selection bias) knob; a two-period or multi-period panel for DiD / TWFE; a donor panel for synthetic control; a running-variable sample for sharp RD; an encouragement design for instrumental variables; a linear mediation SEM |
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
+| `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -237,6 +238,41 @@ print(result.mean_cate, result.cate[:5])
 python -m causal_inference.cli dr-learner --n 2000 --ate 2.0 --heterogeneity 0.5
 ```
 
+
+## Sensitivity to unmeasured confounding
+
+Every estimator above assumes no unmeasured confounding.
+`causal_inference.sensitivity` measures how fragile a result is when that
+assumption fails:
+
+- `e_value(estimate, lower, upper, measure="RR"|"OR"|"HR"|"SMD", rare=False)`
+  gives the **E-value** (VanderWeele & Ding, 2017). This is the minimum
+  risk-ratio association an unmeasured confounder would need with *both*
+  the treatment and the outcome to explain the effect away
+  (`E = RR + sqrt(RR (RR - 1))`). It also gives the E-value for the
+  confidence limit nearest the null. Odds and hazard ratios on common
+  outcomes are converted first (`RR ~= sqrt(OR)`, and VanderWeele's HR
+  transform). `e_value_from_ate(ate, outcome_sd, se)` handles
+  continuous-outcome effects through `RR ~= exp(0.91 d)`.
+- `bias_factor(rr_eu, rr_ud)` is the Ding–VanderWeele joint bounding factor
+  for a hypothesized confounder.
+- `rosenbaum_bounds(pair_differences, gammas)` returns upper and lower
+  bounds on the one-sided Wilcoxon signed-rank p-value for matched pairs
+  when hidden bias may change treatment odds by up to a factor `Gamma`.
+  `rosenbaum_sensitivity_value(...)` finds the `Gamma` at which
+  significance is lost.
+
+```python
+from causal_inference import e_value, rosenbaum_bounds, rosenbaum_sensitivity_value
+
+res = e_value(3.9, 1.8, 8.7)            # RR with 95% CI
+print(res.e_value, res.e_value_ci)      # ~7.26, 3.0
+
+import numpy as np
+diffs = np.random.default_rng(0).normal(0.8, 1.0, 100)  # treated - control per pair
+print(rosenbaum_bounds(diffs, gammas=[1, 1.5, 2]).p_upper)
+print(rosenbaum_sensitivity_value(diffs, alpha=0.05))
+```
 
 ## Installation
 
