@@ -16,6 +16,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
+| `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -238,6 +239,40 @@ print(result.mean_cate, result.cate[:5])
 python -m causal_inference.cli dr-learner --n 2000 --ate 2.0 --heterogeneity 0.5
 ```
 
+
+## Evaluating CATE rankings: Qini curves and RATE
+
+CATE models are usually used to decide *whom* to treat, so they should be
+judged on how well they rank units. `qini_curve(score, treatment, outcome)`
+sorts units by predicted uplift and returns three things:
+
+- Radcliffe's Qini curve `Q(k) = Y_t(k) - Y_c(k)·N_t(k)/N_c(k)`, scaled by `1/n`
+- the uplift curve
+- the **Qini coefficient** (the area above the random-targeting diagonal) and the **AUUC**
+
+It assumes randomized treatment.
+
+For observational data, `rate(score, treatment, outcome, X)` estimates the
+**rank-weighted ATE** (Yadlowsky et al., 2021). It uses doubly robust AIPW
+scores `Γ_i` (also available as `aipw_scores`) to estimate the targeting
+operator characteristic `TOC(q) = E[τ | top q] − ATE`, then integrates it:
+`target="AUTOC"` uses uniform weights and `target="QINI"` weights by `q`.
+The result includes a seeded bootstrap SE and a normal CI. If the RATE is
+significantly above 0, the score really does prioritize the units that
+benefit most.
+
+```python
+from causal_inference import qini_curve, rate
+
+# score: predicted CATE for held-out units, from any model fit on a training split
+q = qini_curve(score, t_test, y_test)
+print(q.qini_coefficient, q.auuc)
+r = rate(score, t_test, y_test, X_test, target="AUTOC", n_bootstrap=500)
+print(r.estimate, (r.ci_low, r.ci_high))
+```
+
+Compute scores on units the CATE model was not trained on. Otherwise the
+ranking is evaluated in-sample and looks better than it is.
 
 ## Sensitivity to unmeasured confounding
 
