@@ -67,9 +67,16 @@ from .sensitivity import (
     rosenbaum_sensitivity_value,
 )
 
+from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
+
 __version__ = "0.1.0"
 
 __all__ = [
+    "QiniCurveResult",
+    "RATEResult",
+    "aipw_scores",
+    "qini_curve",
+    "rate",
     "DifferenceInDifferencesResult",
     "EventStudyResult",
     "EvaluationResult",
