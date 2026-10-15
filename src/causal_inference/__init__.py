@@ -57,6 +57,12 @@ from .propensity import (
     weighted_standardized_mean_differences,
 )
 from .report import render_report
+from .staggered import (
+    GroupTimeATT,
+    StaggeredDiDResult,
+    simulate_staggered_did_data,
+    staggered_did,
+)
 from .sensitivity import (
     EValueResult,
     RosenbaumBoundsResult,
@@ -72,6 +78,10 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "staggered_did",
+    "simulate_staggered_did_data",
+    "StaggeredDiDResult",
+    "GroupTimeATT",
     "QiniCurveResult",
     "RATEResult",
     "aipw_scores",
