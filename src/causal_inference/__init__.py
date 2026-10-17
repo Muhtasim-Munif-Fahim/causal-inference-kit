@@ -57,6 +57,11 @@ from .propensity import (
     weighted_standardized_mean_differences,
 )
 from .report import render_report
+from .bacon import (
+    BaconComparison,
+    BaconDecompositionResult,
+    bacon_decomposition,
+)
 from .staggered import (
     GroupTimeATT,
     StaggeredDiDResult,
@@ -79,6 +84,9 @@ __version__ = "0.1.0"
 
 __all__ = [
     "staggered_did",
+    "bacon_decomposition",
+    "BaconComparison",
+    "BaconDecompositionResult",
     "simulate_staggered_did_data",
     "StaggeredDiDResult",
     "GroupTimeATT",

@@ -27,10 +27,12 @@ from .estimators import (
     overlap_ate,
     propensity_matching,
 )
+from .bacon import bacon_decomposition
 from .evaluate import evaluate, standard_estimators
 from .generators import simulate_did_data, simulate_mediation_data, simulate_observational_data
 from .propensity import propensity_scores
 from .report import render_report
+from .staggered import simulate_staggered_did_data
 
 
 def _save_dataset(path, X, W, treatment, outcome) -> None:
@@ -163,6 +165,43 @@ def _cmd_event_study(args) -> int:
     return 0
 
 
+
+
+def _cmd_bacon(args) -> int:
+    if args.data:
+        df = pd.read_csv(args.data)
+        missing = [c for c in ("unit", "time", "outcome", "cohort") if c not in df.columns]
+        if missing:
+            print(f"bacon: data file is missing columns: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        unit, time, outcome, cohort = (
+            df["unit"].to_numpy(), df["time"].to_numpy(),
+            df["outcome"].to_numpy(dtype=float), df["cohort"].to_numpy(),
+        )
+    else:
+        cohorts = tuple(int(c) for c in args.cohorts.split(",") if c.strip())
+        unit, time, outcome, cohort, _ = simulate_staggered_did_data(
+            n_units=args.n, n_times=args.n_times, cohorts=cohorts, att=args.att, seed=args.seed,
+        )
+    try:
+        result = bacon_decomposition(unit, time, outcome, cohort)
+    except ValueError as exc:
+        print(f"bacon: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"Goodman-Bacon decomposition  units={result.n_units} periods={result.n_periods} "
+        f"TWFE={result.twfe_estimate:.4f}"
+    )
+    print(f"{'type':<18}{'treated':>10}{'control':>10}{'estimate':>12}{'weight':>10}")
+    for c in result.comparisons:
+        treated = "-" if c.treated is None else f"{c.treated:g}"
+        control = "never" if c.control is None else f"{c.control:g}"
+        print(f"{c.kind:<18}{treated:>10}{control:>10}{c.estimate:>12.4f}{c.weight:>10.4f}")
+    print("")
+    for kind, row in result.by_type.items():
+        print(f"{kind:<18} weight={row['weight']:.4f} avg_estimate={row['estimate']:.4f}")
+    print(f"weight on already-treated controls: {result.forbidden_weight:.4f}")
+    return 0
 
 
 def _cmd_mediation(args) -> int:
@@ -388,6 +427,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="use HC1 robust SE instead of clustering by unit",
     )
     event.set_defaults(func=_cmd_event_study)
+
+    bacon = subparsers.add_parser(
+        "bacon",
+        help="Goodman-Bacon decomposition of a staggered TWFE DiD",
+    )
+    bacon.add_argument(
+        "--data", default=None,
+        help="long-format panel CSV with unit, time, outcome, cohort columns (default: simulate)",
+    )
+    bacon.add_argument("--n", type=int, default=200, help="simulated units")
+    bacon.add_argument("--n-times", type=int, default=6, help="simulated periods")
+    bacon.add_argument("--cohorts", default="3,4,5", help="simulated adoption periods, comma-separated")
+    bacon.add_argument("--att", type=float, default=2.0, help="simulated constant ATT")
+    bacon.add_argument("--seed", type=int, default=0, help="simulation seed")
+    bacon.set_defaults(func=_cmd_bacon)
 
     med = subparsers.add_parser(
         "mediation",
