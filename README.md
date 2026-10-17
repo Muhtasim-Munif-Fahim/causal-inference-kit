@@ -17,6 +17,8 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
 | `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
+| `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
+| `causal_inference.bacon` | Goodman-Bacon decomposition of the staggered TWFE DiD into weighted 2x2 comparisons (treated vs never, earlier vs later, later vs earlier / always treated) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -121,6 +123,38 @@ for k, coef, se in zip(result.relative_times, result.coefficients, result.ses):
 python -m causal_inference.cli event-study --n 500 --n-pre 3 --n-post 3 --ate 1.5
 ```
 
+
+## Goodman-Bacon decomposition (staggered TWFE diagnostic)
+
+With staggered adoption the TWFE coefficient is *exactly* a weighted average
+of every 2x2 DiD between timing groups (Goodman-Bacon 2021). Some of those
+2x2s use **already-treated** units as controls; if effects change over time
+those comparisons are biased (and can even flip sign), dragging the TWFE
+estimate with them. `bacon_decomposition` returns every comparison with its
+estimate and weight so you can see how much weight lands on them:
+
+```python
+from causal_inference import bacon_decomposition, simulate_staggered_did_data
+
+unit, time, outcome, cohort, _ = simulate_staggered_did_data(
+    n_units=200, n_times=6, cohorts=(3, 4, 5), att=2.0, seed=0
+)
+res = bacon_decomposition(unit, time, outcome, cohort)
+print(res.twfe_estimate, res.weighted_estimate)   # identical
+print(res.by_type)            # weight and weighted-average estimate per type
+print(res.forbidden_weight)   # weight on already-treated controls
+res.to_frame()                # one row per 2x2 comparison
+```
+
+Cohorts follow the `staggered_did` convention (`0` / `NaN` / after the panel
+= never treated; at or before the first period = always treated). The panel
+must be balanced. Comparison types: `treated_vs_never`, `earlier_vs_later`,
+`later_vs_earlier`, `later_vs_always`. Weights are non-negative and sum to one.
+
+```bash
+python -m causal_inference.cli bacon --n 200 --n-times 6 --cohorts 3,4,5
+python -m causal_inference.cli bacon --data panel.csv   # unit,time,outcome,cohort
+```
 
 ## Linear mediation
 
