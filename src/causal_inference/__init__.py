@@ -62,6 +62,7 @@ from .bacon import (
     BaconDecompositionResult,
     bacon_decomposition,
 )
+from .sdid import SyntheticDiDResult, simulate_sdid_panel, synthetic_did
 from .staggered import (
     GroupTimeATT,
     StaggeredDiDResult,
@@ -83,6 +84,9 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "SyntheticDiDResult",
+    "synthetic_did",
+    "simulate_sdid_panel",
     "staggered_did",
     "bacon_decomposition",
     "BaconComparison",
