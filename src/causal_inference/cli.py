@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import numpy as np
 import pandas as pd
 
 from . import __version__
@@ -28,6 +29,7 @@ from .estimators import (
     propensity_matching,
 )
 from .bacon import bacon_decomposition
+from .sdid import simulate_sdid_panel, synthetic_did
 from .evaluate import evaluate, standard_estimators
 from .generators import simulate_did_data, simulate_mediation_data, simulate_observational_data
 from .propensity import propensity_scores
@@ -201,6 +203,61 @@ def _cmd_bacon(args) -> int:
     for kind, row in result.by_type.items():
         print(f"{kind:<18} weight={row['weight']:.4f} avg_estimate={row['estimate']:.4f}")
     print(f"weight on already-treated controls: {result.forbidden_weight:.4f}")
+    return 0
+
+
+def _cmd_sdid(args) -> int:
+    if args.data:
+        df = pd.read_csv(args.data)
+        missing = [c for c in ("unit", "time", "outcome", "treated") if c not in df.columns]
+        if missing:
+            print(f"sdid: data file is missing columns: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        if args.treatment_time is None:
+            print("sdid: --treatment-time is required with --data", file=sys.stderr)
+            return 2
+        unit, time, outcome = (
+            df["unit"].to_numpy(), df["time"].to_numpy(), df["outcome"].to_numpy(dtype=float),
+        )
+        treated_units = sorted(set(df.loc[df["treated"].astype(float) > 0, "unit"].tolist()))
+        treatment_time = type(time[0])(args.treatment_time) if np.issubdtype(time.dtype, np.number) else args.treatment_time
+        true_att = None
+    else:
+        unit, time, outcome, treated_units, treatment_time, true_att = simulate_sdid_panel(
+            n_control=args.n_control, n_treated=args.n_treated, n_pre=args.n_pre,
+            n_post=args.n_post, att=args.att, seed=args.seed,
+        )
+    try:
+        result = synthetic_did(
+            unit, time, outcome, treated_units, treatment_time,
+            se_method=args.se, n_placebo=args.n_placebo, seed=args.seed,
+        )
+    except ValueError as exc:
+        print(f"sdid: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"Synthetic DiD  treated={len(result.treated_ids)} controls={len(result.control_ids)} "
+        f"pre={len(result.pre_times)} post={len(result.post_times)}"
+    )
+    line = f"SDID estimate={result.estimate:.4f}"
+    if result.std_err is not None:
+        line += (
+            f" se={result.std_err:.4f} ({result.se_method}) "
+            f"95% CI=[{result.ci_lower:.4f}, {result.ci_upper:.4f}]"
+        )
+    print(line)
+    print(f"DiD estimate={result.did_estimate:.4f}  SC estimate={result.sc_estimate:.4f}")
+    if true_att is not None:
+        print(f"true ATT={true_att:.4f}")
+    print(f"zeta={result.zeta:.4f} noise={result.noise_level:.4f} effective controls={result.effective_controls:.2f}")
+    top = np.argsort(-result.unit_weights)[: args.top]
+    print("top unit weights: " + ", ".join(
+        f"{result.control_ids[i]}={result.unit_weights[i]:.3f}" for i in top if result.unit_weights[i] > 0
+    ))
+    nz = result.time_weights > 1e-3
+    print("time weights: " + ", ".join(
+        f"{t}={w:.3f}" for t, w in zip(result.pre_times[nz], result.time_weights[nz])
+    ))
     return 0
 
 
@@ -442,6 +499,26 @@ def build_parser() -> argparse.ArgumentParser:
     bacon.add_argument("--att", type=float, default=2.0, help="simulated constant ATT")
     bacon.add_argument("--seed", type=int, default=0, help="simulation seed")
     bacon.set_defaults(func=_cmd_bacon)
+
+    sdid = subparsers.add_parser(
+        "sdid",
+        help="synthetic difference-in-differences (Arkhangelsky et al. 2021) for block adoption",
+    )
+    sdid.add_argument(
+        "--data", default=None,
+        help="long panel CSV with unit, time, outcome, treated (1 for treated units) columns (default: simulate)",
+    )
+    sdid.add_argument("--treatment-time", default=None, help="first post-treatment period (required with --data)")
+    sdid.add_argument("--se", choices=["auto", "placebo", "jackknife", "none"], default="auto")
+    sdid.add_argument("--n-placebo", type=int, default=200, help="placebo replications")
+    sdid.add_argument("--n-control", type=int, default=40, help="simulated control units")
+    sdid.add_argument("--n-treated", type=int, default=5, help="simulated treated units")
+    sdid.add_argument("--n-pre", type=int, default=20, help="simulated pre-periods")
+    sdid.add_argument("--n-post", type=int, default=6, help="simulated post-periods")
+    sdid.add_argument("--att", type=float, default=2.0, help="simulated constant ATT")
+    sdid.add_argument("--top", type=int, default=5, help="unit weights to print")
+    sdid.add_argument("--seed", type=int, default=0, help="simulation / placebo seed")
+    sdid.set_defaults(func=_cmd_sdid)
 
     med = subparsers.add_parser(
         "mediation",

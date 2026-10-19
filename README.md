@@ -18,6 +18,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
 | `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
 | `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
+| `causal_inference.sdid` | Synthetic difference-in-differences (Arkhangelsky et al. 2021): regularised unit weights + time weights with intercepts, doubly weighted DiD, placebo / jackknife SE, DiD and SC comparisons, and a non-parallel-trends panel simulator |
 | `causal_inference.bacon` | Goodman-Bacon decomposition of the staggered TWFE DiD into weighted 2x2 comparisons (treated vs never, earlier vs later, later vs earlier / always treated) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
@@ -39,6 +40,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | Propensity matching (imputation) | ATE | Counterfactual imputation, with replacement |
 | Difference-in-differences | ATT (DiD) | Two-period 2x2 or multi-period TWFE; clustered-by-unit or HC1 robust SE |
 | Event-study DiD | Dynamic ATT | Relative-time coefficients around adoption; unit and time FE; omit `k=-1` by default |
+| Synthetic DiD | ATT (block adoption) | Unit weights (simplex + intercept + ridge `ζ`) and time weights; placebo or jackknife SE; reproduces the Prop 99 SDID estimate (−15.6) |
 | Synthetic control | ATT (SC) | Non-negative donor weights summing to 1; pre-treatment fit, post-treatment gap, optional in-space placebo |
 | Regression discontinuity (sharp) | LATE at cutoff | Local linear on each side of a threshold; user or Imbens–Kalyanaraman bandwidth |
 | Two-stage least squares | LATE / ATT | IV coefficient on an endogenous treatment; HC1 robust SE and robust first-stage F |
@@ -154,6 +156,44 @@ must be balanced. Comparison types: `treated_vs_never`, `earlier_vs_later`,
 ```bash
 python -m causal_inference.cli bacon --n 200 --n-times 6 --cohorts 3,4,5
 python -m causal_inference.cli bacon --data panel.csv   # unit,time,outcome,cohort
+```
+
+## Synthetic difference-in-differences
+
+DiD weights every control unit and pre-period equally and needs parallel
+trends. Synthetic control re-weights the controls to match the treated path,
+but it uses no unit fixed effect and no time weights. SDID (Arkhangelsky,
+Athey, Hirshberg, Imbens & Wager 2021) does both:
+
+- **Unit weights** `ω` are non-negative and sum to 1. They make the weighted
+  control trend parallel to the treated average *up to a constant*, with a
+  ridge penalty `ζ² T_pre ‖ω‖²`, where `ζ = (N_tr T_post)^{1/4} σ`.
+- **Time weights** `λ` pick the pre-periods that best predict the controls'
+  post-period average.
+- The effect is the doubly weighted 2x2 DiD.
+
+```python
+from causal_inference import simulate_sdid_panel, synthetic_did
+
+unit, time, outcome, treated, t0, att = simulate_sdid_panel(n_control=40, n_treated=5, seed=0)
+res = synthetic_did(unit, time, outcome, treated, t0)          # jackknife SE (>= 2 treated)
+res.estimate, res.std_err, (res.ci_lower, res.ci_upper)
+res.did_estimate, res.sc_estimate                              # DiD / SC on the same panel
+res.unit_weights, res.time_weights, res.effective_controls
+```
+
+Standard errors are `se_method="placebo"` (Algorithm 4) or `"jackknife"`
+(Algorithm 3). The placebo method re-assigns treatment to random controls;
+the jackknife leaves one unit out with the weights fixed. `"auto"` picks the
+jackknife when there are two or more treated units. The panel must be
+balanced, and all treated units adopt at `treatment_time`. On the California
+Proposition 99 data (tests/data), it reproduces the paper's estimates:
+SDID −15.6, DiD −27.3 and SC ≈ −19.6 packs per capita. The time weights land
+on 1986–1988.
+
+```bash
+python -m causal_inference.cli sdid --n-control 40 --n-treated 5
+python -m causal_inference.cli sdid --data panel.csv --treatment-time 1989   # unit,time,outcome,treated
 ```
 
 ## Linear mediation
