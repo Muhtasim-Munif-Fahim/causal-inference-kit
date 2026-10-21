@@ -1,5 +1,6 @@
 """causal_inference: a small toolkit for treatment-effect estimation."""
 
+from .dml import DMLResult, LogisticClassifier, PolynomialRidge, dml_irm, dml_plr
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
     DifferenceInDifferencesResult,
@@ -84,6 +85,11 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "DMLResult",
+    "LogisticClassifier",
+    "PolynomialRidge",
+    "dml_irm",
+    "dml_plr",
     "SyntheticDiDResult",
     "synthetic_did",
     "simulate_sdid_panel",
