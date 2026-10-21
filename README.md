@@ -314,6 +314,31 @@ python -m causal_inference.cli dr-learner --n 2000 --ate 2.0 --heterogeneity 0.5
 ```
 
 
+## Double / debiased machine learning (DML)
+
+`causal_inference.dml` implements Chernozhukov et al. (2018). It combines Neyman-orthogonal scores with **K-fold cross-fitting**, so flexible ML nuisance models can be used without regularisation or overfitting bias, and the resulting estimate is root-n consistent with valid confidence intervals.
+
+- `dml_plr(X, D, Y, ml_l, ml_m)` fits the partially linear model `Y = θD + g(X) + ε`, where `D` may be continuous. It uses the partialling-out score `θ = Σ(D−m̂)(Y−l̂) / Σ(D−m̂)²`.
+- `dml_irm(X, D, Y, ml_g, ml_m, target="ate"|"att")` fits the interactive model for a binary treatment. It uses the AIPW score with arm-specific outcome models, propensity trimming, and folds stratified by treatment.
+- `n_rep > 1` repeats the sample splitting and takes the median estimate. By default the SE is `sqrt(median(se_s² + (θ_s − θ)²))`, as in the paper. `se_aggregation="median_upper_bound"` reproduces DoubleML ≥ 0.10 instead.
+- Learners can be any objects with `fit`/`predict` (classifiers need `predict_proba`), for example scikit-learn models. The NumPy defaults are a ridge on degree-2 polynomial features and L2 logistic regression.
+
+With the same learners and folds, estimates and SEs match **DoubleML 0.11** (`DoubleMLPLR`, `DoubleMLIRM` with ATE/ATTE, and repeated splits) to about 1e-15. Reference values are pinned in the tests.
+
+```python
+from causal_inference import dml_plr, dml_irm
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier   # optional
+
+res = dml_irm(X, D, Y, ml_g=RandomForestRegressor(), ml_m=RandomForestClassifier(),
+              n_folds=5, n_rep=3, random_state=0)
+print(res.summary())          # estimate, SE, 95% CI, p-value
+res.nuisance_rmse             # out-of-fold nuisance quality
+```
+
+```bash
+causal-inference dml --data obs.csv --model irm --target att --folds 5 --reps 3
+```
+
 ## Evaluating CATE rankings: Qini curves and RATE
 
 CATE models are usually used to decide *whom* to treat, so they should be

@@ -432,6 +432,34 @@ def _cmd_dr_learner(args) -> int:
     return 0
 
 
+def _cmd_dml(args) -> int:
+    from .dml import dml_irm, dml_plr
+
+    X, W, treatment, outcome = _load_dataset(args.data)
+    controls = np.hstack([X, W]) if W.size else X
+    if controls.shape[1] == 0:
+        raise SystemExit("data file must contain X* (and optionally W*) control columns")
+    try:
+        if args.model == "plr":
+            res = dml_plr(controls, treatment, outcome, n_folds=args.folds, n_rep=args.reps, random_state=args.seed)
+        else:
+            res = dml_irm(
+                controls, treatment, outcome, target=args.target, n_folds=args.folds,
+                n_rep=args.reps, trimming=args.trimming, random_state=args.seed,
+            )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(res.summary())
+    print(f"{'metric':<16}{'value':>12}")
+    print("-" * 28)
+    for key, val in (("estimate", res.estimate), ("se", res.se), ("ci_lower", res.ci_lower),
+                     ("ci_upper", res.ci_upper), ("p_value", res.p_value)):
+        print(f"{key:<16}{val:>12.4f}")
+    for key, val in res.nuisance_rmse.items():
+        print(f"{'rmse_' + key:<16}{val:>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -602,6 +630,19 @@ def build_parser() -> argparse.ArgumentParser:
     drl.add_argument("--heterogeneity", type=float, default=0.5, help="effect heterogeneity")
     drl.add_argument("--seed", type=int, default=0, help="simulation seed")
     drl.set_defaults(func=_cmd_dr_learner)
+
+    dmlp = subparsers.add_parser(
+        "dml",
+        help="double/debiased machine learning (cross-fitted PLR or IRM/AIPW) on a data file",
+    )
+    dmlp.add_argument("--data", required=True, help="CSV with treatment, outcome and X*/W* controls")
+    dmlp.add_argument("--model", choices=["irm", "plr"], default="irm")
+    dmlp.add_argument("--target", choices=["ate", "att"], default="ate", help="IRM target")
+    dmlp.add_argument("--folds", type=int, default=5, help="cross-fitting folds")
+    dmlp.add_argument("--reps", type=int, default=1, help="repeated sample splits (median aggregation)")
+    dmlp.add_argument("--trimming", type=float, default=0.01, help="propensity clipping for IRM")
+    dmlp.add_argument("--seed", type=int, default=0, help="fold seed")
+    dmlp.set_defaults(func=_cmd_dml)
 
 
     return parser
