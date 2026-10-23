@@ -460,6 +460,37 @@ def _cmd_dml(args) -> int:
     return 0
 
 
+def _cmd_bounds(args) -> int:
+    from .bounds import lee_bounds, manski_bounds
+
+    df = pd.read_csv(args.data)
+    if "treatment" not in df.columns or "outcome" not in df.columns:
+        raise SystemExit("data file must contain 'treatment' and 'outcome' columns")
+    treatment = df["treatment"].to_numpy(dtype=float)
+    outcome = df["outcome"].to_numpy(dtype=float)
+    try:
+        if args.method == "lee":
+            if args.observed not in df.columns:
+                raise SystemExit(f"Lee bounds need a selection column {args.observed!r}")
+            res = lee_bounds(
+                treatment, df[args.observed].to_numpy(dtype=float), outcome,
+                n_boot=args.boot, alpha=args.alpha, random_state=args.seed,
+            )
+        else:
+            res = manski_bounds(
+                treatment, outcome, args.y_min, args.y_max, args.assume,
+                n_boot=args.boot, alpha=args.alpha, random_state=args.seed,
+            )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(res.summary())
+    print(f"{'metric':<16}{'value':>12}")
+    print("-" * 28)
+    for key in ("lower", "upper", "width", "se_lower", "se_upper", "ci_lower", "ci_upper"):
+        print(f"{key:<16}{getattr(res, key):>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -643,6 +674,18 @@ def build_parser() -> argparse.ArgumentParser:
     dmlp.add_argument("--trimming", type=float, default=0.01, help="propensity clipping for IRM")
     dmlp.add_argument("--seed", type=int, default=0, help="fold seed")
     dmlp.set_defaults(func=_cmd_dml)
+
+    bp = subparsers.add_parser("bounds", help="partial identification: Manski or Lee bounds")
+    bp.add_argument("--data", required=True, help="CSV with treatment and outcome (and a selection column for Lee)")
+    bp.add_argument("--method", choices=["manski", "lee"], default="manski")
+    bp.add_argument("--observed", default="observed", help="selection column for Lee bounds")
+    bp.add_argument("--y-min", type=float, default=None, help="outcome lower bound (default: observed min)")
+    bp.add_argument("--y-max", type=float, default=None, help="outcome upper bound (default: observed max)")
+    bp.add_argument("--assume", nargs="*", choices=["mtr", "mts"], default=[], help="Manski shape restrictions")
+    bp.add_argument("--boot", type=int, default=200, help="bootstrap replications (0 to skip)")
+    bp.add_argument("--alpha", type=float, default=0.05)
+    bp.add_argument("--seed", type=int, default=0)
+    bp.set_defaults(func=_cmd_bounds)
 
 
     return parser

@@ -16,6 +16,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.propensity` | Logistic regression by gradient descent (L2, backtracking), propensity scores, SMD and overlap diagnostics |
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
+| `causal_inference.bounds` | Partial identification: Manski worst-case ATE bounds (with MTR / MTS shape restrictions), Lee (2009) trimming bounds under monotone attrition, and Imbens–Manski confidence intervals with bootstrap SEs |
 | `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
 | `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
 | `causal_inference.sdid` | Synthetic difference-in-differences (Arkhangelsky et al. 2021): regularised unit weights + time weights with intercepts, doubly weighted DiD, placebo / jackknife SE, DiD and SC comparisons, and a non-parallel-trends panel simulator |
@@ -406,6 +407,38 @@ import numpy as np
 diffs = np.random.default_rng(0).normal(0.8, 1.0, 100)  # treated - control per pair
 print(rosenbaum_bounds(diffs, gammas=[1, 1.5, 2]).p_upper)
 print(rosenbaum_sensitivity_value(diffs, alpha=0.05))
+```
+
+## Partial identification: Manski and Lee bounds
+
+Use bounds when the assumptions behind a point estimate are not credible.
+Instead of one number, they report the range of effects consistent with the data.
+
+- `manski_bounds(treatment, outcome, y_min, y_max, assumptions=())` needs only a bounded
+  outcome. The no-assumption interval has width `y_max - y_min` and always contains 0.
+  `"mtr"` (monotone treatment response, `Y(1) >= Y(0)`) raises the lower bound to 0.
+  `"mts"` (monotone treatment selection) caps the upper bound at the naive difference.
+  If the data contradict the chosen assumptions, the result is marked `refuted`.
+- `lee_bounds(treatment, observed, outcome)` gives sharp bounds for randomized trials with
+  differential attrition. It assumes selection is monotone in treatment. It trims
+  `|p1 - p0| / max(p1, p0)` of the better-observed arm from the top or the bottom, which
+  bounds the effect for units observed under either assignment. Trimming is exact, with a
+  fractional boundary weight.
+- `imbens_manski_interval(lo, hi, se_lo, se_hi)` is the Imbens & Manski (2004) CI. It covers
+  the true effect, not the whole identified set, with probability `1 - alpha`. Pass
+  `n_boot=` to either bounds function to get bootstrap SEs and this interval.
+
+```python
+from causal_inference import lee_bounds, manski_bounds
+
+res = lee_bounds(treatment, observed, outcome, n_boot=500, random_state=0)
+print(res.summary())  # Lee bounds: [0.88, 1.82] after trimming 22.9% of the treated arm ...
+manski_bounds(treatment, y_binary, 0, 1, ["mtr", "mts"]).summary()
+```
+
+```bash
+causal-inference bounds --data trial.csv --method lee --observed observed --boot 500
+causal-inference bounds --data obs.csv --y-min 0 --y-max 1 --assume mtr mts
 ```
 
 ## Installation
