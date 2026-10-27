@@ -88,11 +88,25 @@ from .sensitivity import (
     rosenbaum_sensitivity_value,
 )
 
+from .policy import (
+    PolicyNode,
+    PolicyTree,
+    PolicyValueResult,
+    dr_policy_scores,
+    policy_tree,
+    policy_value,
+)
 from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "PolicyNode",
+    "PolicyTree",
+    "PolicyValueResult",
+    "dr_policy_scores",
+    "policy_tree",
+    "policy_value",
     "LeeBoundsResult",
     "ManskiBoundsResult",
     "imbens_manski_interval",

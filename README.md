@@ -17,6 +17,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
 | `causal_inference.bounds` | Partial identification: Manski worst-case ATE bounds (with MTR / MTS shape restrictions), Lee (2009) trimming bounds under monotone attrition, and Imbens–Manski confidence intervals with bootstrap SEs |
+| `causal_inference.policy` | Policy learning: doubly robust per-action rewards, policy-value evaluation with SEs and gains vs treat-none/treat-all, and exhaustive-search policy trees (Athey & Wager 2021) up to depth 3 with treatment costs |
 | `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
 | `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
 | `causal_inference.sdid` | Synthetic difference-in-differences (Arkhangelsky et al. 2021): regularised unit weights + time weights with intercepts, doubly weighted DiD, placebo / jackknife SE, DiD and SC comparisons, and a non-parallel-trends panel simulator |
@@ -440,6 +441,38 @@ manski_bounds(treatment, y_binary, 0, 1, ["mtr", "mts"]).summary()
 causal-inference bounds --data trial.csv --method lee --observed observed --boot 500
 causal-inference bounds --data obs.csv --y-min 0 --y-max 1 --assume mtr mts
 ```
+
+## Policy learning: whom to treat
+
+A CATE model tells you who benefits. A policy decides whom to treat.
+`dr_policy_scores` builds doubly robust rewards
+`Gamma_i(a) = mu_a(X_i) + 1{T_i=a}(Y_i - mu_a(X_i)) / P(T_i=a | X_i)` for
+control and treatment. The mean reward of a policy is an unbiased estimate of
+its value if either nuisance model is correct.
+
+- `policy_value(actions, scores)` gives the value with a CLT standard error,
+  the gain over treat-none and over treat-all (each with an SE), and the
+  treated fraction.
+- `PolicyTree(max_depth=2, min_leaf_size=10, n_thresholds=20, treatment_cost=0)`
+  runs an exhaustive search over axis-aligned trees (Athey & Wager 2021;
+  Zhou, Athey & Wager 2023) for the tree with the largest total reward.
+  Depth-1 subtrees are solved exactly with sorted cumulative sums.
+  Thresholds come from feature quantiles. `rules()` prints the tree as
+  if/else rules.
+- `policy_tree(X, treatment, outcome, ...)` does both steps.
+
+```python
+from causal_inference import PolicyTree, dr_policy_scores, policy_value
+
+G = dr_policy_scores(X, treatment, outcome)          # (n, 2) rewards
+tree = PolicyTree(max_depth=2, treatment_cost=0.1).fit(X[train], G[train])
+print(tree.rules(["age", "income"], ["control", "treat"]))
+print(policy_value(tree.predict(X[test]), G[test]))  # evaluate held out
+```
+
+CLI: `causal-inference policy --data obs.csv --depth 2 --cost 0.1 --test-frac 0.3`.
+The tree is chosen to maximise in-sample reward, so evaluate it on held-out
+units.
 
 ## Installation
 

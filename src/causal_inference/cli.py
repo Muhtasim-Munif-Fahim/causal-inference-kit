@@ -491,6 +491,41 @@ def _cmd_bounds(args) -> int:
     return 0
 
 
+def _cmd_policy(args) -> int:
+    from .policy import PolicyTree, dr_policy_scores, policy_value
+
+    X, W, treatment, outcome = _load_dataset(args.data)
+    if X.shape[1] == 0:
+        raise SystemExit("data file must contain X* columns to split on")
+    if not 0.0 <= args.test_frac < 1.0:
+        raise SystemExit("--test-frac must be in [0, 1)")
+    try:
+        scores = dr_policy_scores(X, treatment, outcome, W=W if W.size else None)
+        n = X.shape[0]
+        idx = np.random.default_rng(args.seed).permutation(n)
+        n_test = int(round(args.test_frac * n))
+        test, train = idx[:n_test], idx[n_test:]
+        tree = PolicyTree(
+            max_depth=args.depth, min_leaf_size=args.min_leaf,
+            n_thresholds=args.thresholds, treatment_cost=args.cost,
+        ).fit(X[train], scores[train])
+        eval_idx = test if n_test > 0 else train
+        costs = tree._costs(scores.shape[1])
+        res = policy_value(tree.predict(X[eval_idx]), scores[eval_idx] - costs[None, :])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    names = [f"X{j}" for j in range(X.shape[1])]
+    print(f"Policy tree  depth={args.depth} train={train.size} eval={'held-out' if n_test else 'in-sample'} n={res.n}")
+    print(tree.rules(names, ["control", "treat"]))
+    print(f"{'metric':<20}{'value':>12}{'se':>10}")
+    print("-" * 42)
+    print(f"{'policy_value':<20}{res.value:>12.4f}{res.se:>10.4f}")
+    print(f"{'gain_vs_control':<20}{res.gain_vs_control:>12.4f}{res.gain_vs_control_se:>10.4f}")
+    print(f"{'gain_vs_treat_all':<20}{res.gain_vs_treat_all:>12.4f}{res.gain_vs_treat_all_se:>10.4f}")
+    print(f"{'treated_fraction':<20}{res.treated_fraction:>12.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -686,6 +721,16 @@ def build_parser() -> argparse.ArgumentParser:
     bp.add_argument("--alpha", type=float, default=0.05)
     bp.add_argument("--seed", type=int, default=0)
     bp.set_defaults(func=_cmd_bounds)
+
+    pp = subparsers.add_parser("policy", help="learn a doubly robust policy tree (whom to treat) from a data file")
+    pp.add_argument("--data", required=True, help="CSV with treatment, outcome, X* split features and optional W* controls")
+    pp.add_argument("--depth", type=int, default=2, help="tree depth (0-3)")
+    pp.add_argument("--min-leaf", type=int, default=20, help="minimum units per leaf")
+    pp.add_argument("--thresholds", type=int, default=20, help="candidate split quantiles per feature")
+    pp.add_argument("--cost", type=float, default=0.0, help="per-unit treatment cost")
+    pp.add_argument("--test-frac", type=float, default=0.3, help="held-out fraction for evaluation (0 = in-sample)")
+    pp.add_argument("--seed", type=int, default=0)
+    pp.set_defaults(func=_cmd_policy)
 
 
     return parser
