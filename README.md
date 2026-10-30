@@ -17,6 +17,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.estimators` | IPW (ATE/ATT, stabilized and Hájek variants), overlap / matching weights (ATO), entropy balancing (ATT/ATE), AIPW (doubly robust ATE), nearest-neighbor propensity matching, two-period DiD and optional multi-period TWFE (clustered or robust SE), event-study / dynamic DiD relative-time coefficients, Abadie synthetic control, sharp local-linear regression discontinuity, 2SLS instrumental variables (HC1 SE, robust first-stage F), linear product-of-coefficients mediation (Sobel SE), T-learner / S-learner / X-learner / R-learner / DR-learner CATE (meta-learners with OLS base models) |
 | `causal_inference.sensitivity` | E-values (VanderWeele & Ding) for RR / OR / HR / standardized effects and their CIs, the Ding–VanderWeele bias factor, Wilcoxon signed-rank Rosenbaum bounds and the Gamma sensitivity value for matched pairs |
 | `causal_inference.bounds` | Partial identification: Manski worst-case ATE bounds (with MTR / MTS shape restrictions), Lee (2009) trimming bounds under monotone attrition, and Imbens–Manski confidence intervals with bootstrap SEs |
+| `causal_inference.its` | Interrupted time series: segmented regression (level and slope change, per-period / average / cumulative effects, counterfactual), Newey-West HAC SEs, Fourier seasonality and covariates, comparative ITS against a control series, placebo-in-time test |
 | `causal_inference.policy` | Policy learning: doubly robust per-action rewards, policy-value evaluation with SEs and gains vs treat-none/treat-all, and exhaustive-search policy trees (Athey & Wager 2021) up to depth 3 with treatment costs |
 | `causal_inference.uplift` | CATE ranking evaluation: Qini / uplift curves with the Qini coefficient and AUUC, per-unit AIPW scores, and the rank-weighted ATE (AUTOC / QINI) with a bootstrap SE |
 | `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
@@ -440,6 +441,46 @@ manski_bounds(treatment, y_binary, 0, 1, ["mtr", "mts"]).summary()
 ```bash
 causal-inference bounds --data trial.csv --method lee --observed observed --boot 500
 causal-inference bounds --data obs.csv --y-min 0 --y-max 1 --assume mtr mts
+```
+
+## Interrupted time series
+
+When a single unit is treated at a known time and no comparison group exists,
+`interrupted_time_series(y, t0)` fits the segmented regression
+
+    y_t = b0 + b1 (t - t0) + b2 D_t + b3 (t - t0) D_t + seasonal terms + covariates + e_t
+
+`level_change` is `b2`, the immediate jump at `t0`. `slope_change` is `b3`.
+The pre-period trend projected forward is the `counterfactual`. `effects`
+holds every post-period gap `b2 + b3 (t - t0)`, and `average_effect`,
+`cumulative_effect` and `relative_effect` summarise it. Residuals of time
+series are autocorrelated, so the standard errors are **Newey-West HAC**
+(Bartlett kernel, default lag `floor(4 (T/100)^(2/9))`, `T/(T-k)`
+correction). The fit also reports the Durbin-Watson statistic and the lag-1
+residual autocorrelation.
+
+- `period=12, n_harmonics=2` adds Fourier seasonality. `covariates=` adds
+  time-varying controls. `time=` lets you pass a dated axis (then give `t0`
+  on that scale).
+- `comparative_interrupted_time_series(y_treated, y_control, t0)` is a
+  difference in differences of levels and slopes. It removes shocks that hit
+  both series at `t0`.
+- `its_placebo_test(y, t0)` refits on the pre-period only, at every
+  admissible fake interruption time. A rejection rate far above `alpha`
+  means the trend model is misspecified.
+
+```python
+from causal_inference import interrupted_time_series, its_placebo_test
+
+res = interrupted_time_series(monthly_sales, 36, period=12)
+print(res.summary())             # level/slope change, average & cumulative effect, HAC CIs
+res.ci("cumulative_effect"), res.counterfactual
+its_placebo_test(monthly_sales, 36, period=12)["rejection_rate"]
+```
+
+```bash
+python -m causal_inference.cli its --data sales.csv --outcome sales --intervention 36 --period 12 --placebo
+python -m causal_inference.cli its --data sales.csv --outcome treated --control control --intervention 36
 ```
 
 ## Policy learning: whom to treat

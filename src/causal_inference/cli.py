@@ -526,6 +526,34 @@ def _cmd_policy(args) -> int:
     return 0
 
 
+def _cmd_its(args) -> int:
+    from .its import comparative_interrupted_time_series, interrupted_time_series, its_placebo_test
+
+    df = pd.read_csv(args.data)
+    if args.outcome not in df.columns:
+        raise SystemExit(f"data file must contain an outcome column {args.outcome!r}")
+    if args.time is not None and args.time not in df.columns:
+        raise SystemExit(f"time column {args.time!r} not found")
+    y = df[args.outcome].to_numpy(dtype=float)
+    time = df[args.time].to_numpy(dtype=float) if args.time else None
+    kw = dict(time=time, period=args.period, n_harmonics=args.harmonics, hac_lags=args.lags, alpha=args.alpha)
+    try:
+        if args.control:
+            if args.control not in df.columns:
+                raise SystemExit(f"control column {args.control!r} not found")
+            res = comparative_interrupted_time_series(y, df[args.control].to_numpy(dtype=float), args.intervention, **kw)
+        else:
+            res = interrupted_time_series(y, args.intervention, **kw)
+        print(res.summary())
+        if args.placebo:
+            pl = its_placebo_test(y, args.intervention, **kw)
+            print(f"  placebo-in-time: {pl['times'].size} fake interruptions, "
+                  f"rejection rate {pl['rejection_rate']:.2f} at alpha={args.alpha}")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="causal-inference",
@@ -731,6 +759,19 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--test-frac", type=float, default=0.3, help="held-out fraction for evaluation (0 = in-sample)")
     pp.add_argument("--seed", type=int, default=0)
     pp.set_defaults(func=_cmd_policy)
+
+    itp = subparsers.add_parser("its", help="interrupted time series (segmented regression, Newey-West SEs)")
+    itp.add_argument("--data", required=True, help="CSV with one row per time point")
+    itp.add_argument("--outcome", default="outcome", help="outcome column (default outcome)")
+    itp.add_argument("--intervention", type=float, required=True, help="first post-intervention time (row index by default)")
+    itp.add_argument("--time", default=None, help="optional time column (default: row index)")
+    itp.add_argument("--control", default=None, help="control series column for a comparative ITS")
+    itp.add_argument("--period", type=float, default=None, help="seasonal period for Fourier terms (e.g. 12)")
+    itp.add_argument("--harmonics", type=int, default=1)
+    itp.add_argument("--lags", type=int, default=None, help="Newey-West lags (default floor(4 (T/100)^(2/9)))")
+    itp.add_argument("--alpha", type=float, default=0.05)
+    itp.add_argument("--placebo", action="store_true", help="also run a placebo-in-time test on the pre-period")
+    itp.set_defaults(func=_cmd_its)
 
 
     return parser

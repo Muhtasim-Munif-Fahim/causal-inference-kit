@@ -8,6 +8,13 @@ from .bounds import (
     manski_bounds,
     trimmed_mean,
 )
+from .its import (
+    ITSResult,
+    comparative_interrupted_time_series,
+    interrupted_time_series,
+    its_placebo_test,
+    newey_west_cov,
+)
 from .dml import DMLResult, LogisticClassifier, PolynomialRidge, dml_irm, dml_plr
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
@@ -101,6 +108,11 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "ITSResult",
+    "comparative_interrupted_time_series",
+    "interrupted_time_series",
+    "its_placebo_test",
+    "newey_west_cov",
     "PolicyNode",
     "PolicyTree",
     "PolicyValueResult",
