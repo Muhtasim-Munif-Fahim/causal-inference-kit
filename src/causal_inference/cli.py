@@ -460,6 +460,35 @@ def _cmd_dml(args) -> int:
     return 0
 
 
+def _cmd_tmle(args) -> int:
+    from .tmle import tmle_ate
+
+    X, W, treatment, outcome = _load_dataset(args.data)
+    controls = np.hstack([X, W]) if W.size else X
+    if controls.shape[1] == 0:
+        raise SystemExit("data file must contain X* (and optionally W*) control columns")
+    bounds = tuple(args.bounds) if args.bounds else None
+    try:
+        res = tmle_ate(
+            controls, treatment, outcome, outcome_type=args.outcome_type, bounds=bounds,
+            truncation=args.truncation, n_folds=args.folds, random_state=args.seed,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(res.summary())
+    print(f"{'metric':<16}{'value':>12}")
+    print("-" * 28)
+    rows = [("ate", res.estimate), ("se", res.se), ("ci_lower", res.ci_lower), ("ci_upper", res.ci_upper),
+            ("p_value", res.p_value), ("E[Y(1)]", res.psi1), ("E[Y(0)]", res.psi0),
+            ("initial_gcomp", res.initial_estimate), ("aipw", res.aipw_estimate), ("epsilon", res.epsilon)]
+    if res.risk_ratio is not None:
+        rows += [("risk_ratio", res.risk_ratio), ("odds_ratio", res.odds_ratio)]
+    for key, val in rows:
+        print(f"{key:<16}{val:>12.4f}")
+    print(f"{'n_truncated':<16}{res.n_truncated:>12d}")
+    return 0
+
+
 def _cmd_bounds(args) -> int:
     from .bounds import lee_bounds, manski_bounds
 
@@ -737,6 +766,18 @@ def build_parser() -> argparse.ArgumentParser:
     dmlp.add_argument("--trimming", type=float, default=0.01, help="propensity clipping for IRM")
     dmlp.add_argument("--seed", type=int, default=0, help="fold seed")
     dmlp.set_defaults(func=_cmd_dml)
+
+    tm = subparsers.add_parser(
+        "tmle",
+        help="targeted maximum likelihood estimate of the ATE (continuous or binary outcome)",
+    )
+    tm.add_argument("--data", required=True, help="CSV with treatment, outcome and X*/W* controls")
+    tm.add_argument("--outcome-type", choices=["auto", "continuous", "binary"], default="auto")
+    tm.add_argument("--bounds", type=float, nargs=2, metavar=("A", "B"), help="outcome bounds for scaling")
+    tm.add_argument("--truncation", type=float, default=0.01, help="propensity truncation level")
+    tm.add_argument("--folds", type=int, default=1, help="cross-fitting folds (1 = none)")
+    tm.add_argument("--seed", type=int, default=0, help="fold seed")
+    tm.set_defaults(func=_cmd_tmle)
 
     bp = subparsers.add_parser("bounds", help="partial identification: Manski or Lee bounds")
     bp.add_argument("--data", required=True, help="CSV with treatment and outcome (and a selection column for Lee)")

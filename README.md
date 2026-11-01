@@ -23,6 +23,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.staggered` | Callaway–Sant'Anna-style group-time ATTs for staggered adoption (never / not-yet-treated controls, bootstrap SE) and a staggered panel simulator |
 | `causal_inference.sdid` | Synthetic difference-in-differences (Arkhangelsky et al. 2021): regularised unit weights + time weights with intercepts, doubly weighted DiD, placebo / jackknife SE, DiD and SC comparisons, and a non-parallel-trends panel simulator |
 | `causal_inference.bacon` | Goodman-Bacon decomposition of the staggered TWFE DiD into weighted 2x2 comparisons (treated vs never, earlier vs later, later vs earlier / always treated) |
+| `causal_inference.tmle` | Targeted maximum likelihood estimation of the ATE: logistic fluctuation of the initial outcome model along the clever covariate, bounded scaling for continuous outcomes, influence-curve SEs, risk ratio / odds ratio for binary outcomes, optional cross-fitting (CV-TMLE) |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -340,6 +341,27 @@ res.nuisance_rmse             # out-of-fold nuisance quality
 
 ```bash
 causal-inference dml --data obs.csv --model irm --target att --folds 5 --reps 3
+```
+
+## Targeted maximum likelihood estimation (TMLE)
+
+`tmle_ate(X, T, Y)` implements van der Laan & Rubin (2006). Like AIPW it is doubly robust and semiparametric efficient, but it removes the plug-in bias differently: it **updates the initial outcome model** along the logistic submodel `logit Q* = logit Q + ε·H`, where the clever covariate is `H = A/g − (1−A)/(1−g)`, and fits `ε` by maximum likelihood.
+
+- The update solves the efficient-influence-function equation exactly. The estimate `mean(Q*(1,X) − Q*(0,X))` is still a substitution estimator, so it respects the outcome range (for example, a risk difference stays in [−1, 1]) even when propensities are extreme.
+- Continuous outcomes are scaled to [0, 1] using `bounds=(a, b)`, which default to the observed range (Gruber & van der Laan 2010). Binary outcomes also report the **risk ratio** and **odds ratio**, with delta-method CIs.
+- Inference comes from the influence curve. The result also reports `initial_estimate` (g-computation), `aipw_estimate` on the same nuisances, the fitted `epsilon`, and how many propensities were truncated (`truncation=0.01`).
+- `n_folds >= 2` cross-fits the nuisances (pooled CV-TMLE), so flexible learners can be used. Pass `propensity=` when the assignment probabilities are known, for example in a randomized trial.
+
+```python
+from causal_inference import tmle_ate
+
+res = tmle_ate(X, T, Y, n_folds=5)           # ml_q / ml_g accept sklearn-style learners
+print(res.summary())                         # ATE, SE, CI, E[Y(1)], E[Y(0)] (+ RR / OR for binary Y)
+```
+
+```bash
+causal-inference tmle --data obs.csv --folds 5
+causal-inference tmle --data trial.csv --outcome-type binary
 ```
 
 ## Evaluating CATE rankings: Qini curves and RATE

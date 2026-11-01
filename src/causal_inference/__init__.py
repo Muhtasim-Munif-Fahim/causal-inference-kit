@@ -16,6 +16,7 @@ from .its import (
     newey_west_cov,
 )
 from .dml import DMLResult, LogisticClassifier, PolynomialRidge, dml_irm, dml_plr
+from .tmle import TMLEResult, tmle_ate
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
     DifferenceInDifferencesResult,
@@ -130,6 +131,8 @@ __all__ = [
     "PolynomialRidge",
     "dml_irm",
     "dml_plr",
+    "TMLEResult",
+    "tmle_ate",
     "SyntheticDiDResult",
     "synthetic_did",
     "simulate_sdid_panel",
