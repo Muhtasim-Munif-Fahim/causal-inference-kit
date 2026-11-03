@@ -505,6 +505,28 @@ python -m causal_inference.cli its --data sales.csv --outcome sales --interventi
 python -m causal_inference.cli its --data sales.csv --outcome treated --control control --intervention 36
 ```
 
+## Doubly robust difference-in-differences
+
+When parallel trends only hold *conditional on covariates* (treated and
+control units trend differently because they differ in `X`), the plain
+DiD is biased. `dr_did` implements the Sant'Anna & Zhao (2020) doubly
+robust DiD for a two-period panel: it combines a logistic propensity model
+with an OLS model of the control-group trend and stays consistent if
+*either* model is correct. Standard errors come from the influence
+function, including the estimation effect of both nuisance models.
+
+```python
+from causal_inference import dr_did, simulate_conditional_did_data
+
+d = simulate_conditional_did_data(n=2000, att=1.0, nonlinear_trend=True)
+res = dr_did(d["y_pre"], d["y_post"], d["treatment"], d["X"])
+print(res.summary())   # DR ~ 1.0; OR DiD is biased, naive DiD more so
+```
+
+`or_did` (Heckman et al. 1997 outcome regression) and `ipw_did`
+(Abadie 2005 normalized IPW) are available on their own, and their point
+estimates are also reported on the result for comparison.
+
 ## Policy learning: whom to treat
 
 A CATE model tells you who benefits. A policy decides whom to treat.
