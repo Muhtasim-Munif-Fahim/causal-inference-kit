@@ -79,6 +79,13 @@ from .bacon import (
     BaconDecompositionResult,
     bacon_decomposition,
 )
+from .drdid import (
+    DRDiDResult,
+    dr_did,
+    ipw_did,
+    or_did,
+    simulate_conditional_did_data,
+)
 from .sdid import SyntheticDiDResult, simulate_sdid_panel, synthetic_did
 from .staggered import (
     GroupTimeATT,
@@ -109,6 +116,11 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "DRDiDResult",
+    "dr_did",
+    "ipw_did",
+    "or_did",
+    "simulate_conditional_did_data",
     "ITSResult",
     "comparative_interrupted_time_series",
     "interrupted_time_series",
