@@ -751,6 +751,27 @@ assumptions that are not testable from the data alone:
 python -m pytest tests -q -c pyproject.toml
 ```
 
+
+## Anderson–Rubin weak-IV inference
+
+When the first-stage F is small, TSLS standard errors are not reliable.
+`anderson_rubin_test` / `anderson_rubin_ci` invert the just-identified
+Anderson–Rubin (1949) test, which stays valid under arbitrarily weak
+instruments. `weak_instrument_flag` compares a first-stage F to the
+Stock–Yogo 10% relative-bias critical value:
+
+```python
+from causal_inference import (
+    two_stage_least_squares,
+    anderson_rubin_ci,
+    weak_instrument_flag,
+)
+
+fit = two_stage_least_squares(Z, D, Y)
+weak_instrument_flag(fit.first_stage_f)
+ci = anderson_rubin_ci(Z, D, Y, grid_radius=10)
+```
+
 ## License
 
 MIT
