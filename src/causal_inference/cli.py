@@ -489,6 +489,24 @@ def _cmd_tmle(args) -> int:
     return 0
 
 
+def _cmd_qte(args) -> int:
+    from .qte import quantile_treatment_effects
+
+    X, W, treatment, outcome = _load_dataset(args.data)
+    controls = np.hstack([X, W]) if W.size else X
+    if controls.shape[1] == 0:
+        raise SystemExit("data file must contain X* (and optionally W*) control columns")
+    try:
+        res = quantile_treatment_effects(
+            controls, treatment, outcome, quantiles=args.quantiles, target=args.target,
+            n_bootstrap=args.boot, trim=args.trim, seed=args.seed,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(res.summary())
+    return 0
+
+
 def _cmd_bounds(args) -> int:
     from .bounds import lee_bounds, manski_bounds
 
@@ -778,6 +796,17 @@ def build_parser() -> argparse.ArgumentParser:
     tm.add_argument("--folds", type=int, default=1, help="cross-fitting folds (1 = none)")
     tm.add_argument("--seed", type=int, default=0, help="fold seed")
     tm.set_defaults(func=_cmd_tmle)
+
+    qp = subparsers.add_parser(
+        "qte", help="quantile treatment effects (Firpo 2007 IPW) at several quantiles"
+    )
+    qp.add_argument("--data", required=True, help="CSV with treatment, outcome and X*/W* controls")
+    qp.add_argument("--quantiles", type=float, nargs="+", default=[0.1, 0.25, 0.5, 0.75, 0.9])
+    qp.add_argument("--target", choices=["ate", "att"], default="ate", help="QTE or QTE on the treated")
+    qp.add_argument("--boot", type=int, default=200, help="bootstrap replications (0 to skip)")
+    qp.add_argument("--trim", type=float, default=0.01, help="propensity clipping level")
+    qp.add_argument("--seed", type=int, default=0)
+    qp.set_defaults(func=_cmd_qte)
 
     bp = subparsers.add_parser("bounds", help="partial identification: Manski or Lee bounds")
     bp.add_argument("--data", required=True, help="CSV with treatment and outcome (and a selection column for Lee)")
