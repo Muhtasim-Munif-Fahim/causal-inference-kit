@@ -26,6 +26,7 @@ from .its import (
 )
 from .dml import DMLResult, LogisticClassifier, PolynomialRidge, dml_irm, dml_plr
 from .tmle import TMLEResult, tmle_ate
+from .qte import QuantileTreatmentEffectResult, ipw_weighted_quantile, quantile_treatment_effects
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
     DifferenceInDifferencesResult,
@@ -154,6 +155,9 @@ __all__ = [
     "dml_plr",
     "TMLEResult",
     "tmle_ate",
+    "QuantileTreatmentEffectResult",
+    "ipw_weighted_quantile",
+    "quantile_treatment_effects",
     "SyntheticDiDResult",
     "synthetic_did",
     "simulate_sdid_panel",

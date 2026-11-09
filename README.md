@@ -24,6 +24,7 @@ evaluation against the ground truth, E-value and Rosenbaum-bounds sensitivity an
 | `causal_inference.sdid` | Synthetic difference-in-differences (Arkhangelsky et al. 2021): regularised unit weights + time weights with intercepts, doubly weighted DiD, placebo / jackknife SE, DiD and SC comparisons, and a non-parallel-trends panel simulator |
 | `causal_inference.bacon` | Goodman-Bacon decomposition of the staggered TWFE DiD into weighted 2x2 comparisons (treated vs never, earlier vs later, later vs earlier / always treated) |
 | `causal_inference.tmle` | Targeted maximum likelihood estimation of the ATE: logistic fluctuation of the initial outcome model along the clever covariate, bounded scaling for continuous outcomes, influence-curve SEs, risk ratio / odds ratio for binary outcomes, optional cross-fitting (CV-TMLE) |
+| `causal_inference.qte` | Quantile treatment effects (Firpo 2007): propensity-weighted quantiles of the potential-outcome distributions, QTE or QTT, bootstrap SEs / percentile CIs |
 | `causal_inference.evaluate` | Bootstrap bias / RMSE / standard error of a list of estimators against the true effect |
 | `causal_inference.report` | Markdown renderer: balance table, point estimates, evaluation summary, assumption caveats |
 | `causal_inference.cli` | `simulate`, `estimate` and `report` subcommands |
@@ -362,6 +363,26 @@ print(res.summary())                         # ATE, SE, CI, E[Y(1)], E[Y(0)] (+ 
 ```bash
 causal-inference tmle --data obs.csv --folds 5
 causal-inference tmle --data trial.csv --outcome-type binary
+```
+
+## Quantile treatment effects (Firpo 2007)
+
+The ATE can hide distributional effects; `quantile_treatment_effects` estimates
+`q_1(tau) - q_0(tau)` for several quantile levels by minimising the
+propensity-weighted check loss (weights `T/e(X)` and `(1-T)/(1-e(X))`), or the
+effect on the treated with `target="att"` (controls weighted by `e/(1-e)`).
+Bootstrap intervals refit the propensity model in every replicate.
+
+```python
+from causal_inference import quantile_treatment_effects
+
+res = quantile_treatment_effects(X, T, Y, quantiles=[0.1, 0.5, 0.9], n_bootstrap=500, trim=0.01, seed=0)
+res.qte, res.ci_lower, res.ci_upper
+print(res.summary())
+```
+
+```bash
+causal-inference qte --data obs.csv --quantiles 0.1 0.25 0.5 0.75 0.9 --boot 500
 ```
 
 ## Evaluating CATE rankings: Qini curves and RATE
