@@ -793,6 +793,24 @@ weak_instrument_flag(fit.first_stage_f)
 ci = anderson_rubin_ci(Z, D, Y, grid_radius=10)
 ```
 
+## Omitted-variable-bias sensitivity (Cinelli & Hazlett 2020)
+
+How strong would an unmeasured confounder have to be to overturn a regression
+estimate? `ovb_sensitivity` fits `Y ~ 1 + D + X` and reports the partial R² of
+the treatment with the outcome, the **robustness value** `RV_q` (equal partial
+R² with treatment and outcome needed to cut the estimate by `100*q` %) and
+`RV_{q,alpha}` (needed to make it insignificant), plus bounds for confounders
+`kd`/`ky` times as strong as an observed benchmark covariate. Numpy only.
+
+```python
+from causal_inference import ovb_adjusted_estimate, ovb_sensitivity
+
+res = ovb_sensitivity(X, D, Y, q=1.0, alpha=0.05, benchmark=0, benchmark_name="age", kd=(1, 2, 3))
+res.rv_q, res.rv_qa, res.partial_r2_yd
+print(res.summary())
+ovb_adjusted_estimate(res.estimate, res.se, res.dof, r2dz_x=0.05, r2yz_dx=0.10)
+```
+
 ## License
 
 MIT
