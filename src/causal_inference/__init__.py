@@ -26,6 +26,15 @@ from .its import (
 )
 from .dml import DMLResult, LogisticClassifier, PolynomialRidge, dml_irm, dml_plr
 from .tmle import TMLEResult, tmle_ate
+from .ovb import (
+    OVBBound,
+    OVBSensitivityResult,
+    ovb_adjusted_estimate,
+    ovb_bounds,
+    ovb_sensitivity,
+    partial_r2,
+    robustness_value,
+)
 from .qte import QuantileTreatmentEffectResult, ipw_weighted_quantile, quantile_treatment_effects
 from .evaluate import EvaluationResult, evaluate, standard_estimators
 from .estimators import (
@@ -126,6 +135,13 @@ from .uplift import QiniCurveResult, RATEResult, aipw_scores, qini_curve, rate
 __version__ = "0.1.0"
 
 __all__ = [
+    "OVBBound",
+    "OVBSensitivityResult",
+    "ovb_adjusted_estimate",
+    "ovb_bounds",
+    "ovb_sensitivity",
+    "partial_r2",
+    "robustness_value",
     "DRDiDResult",
     "dr_did",
     "ipw_did",
